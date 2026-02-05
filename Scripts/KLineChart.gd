@@ -3,21 +3,19 @@ class_name KLineChart
 
 # --- 配置参数 ---
 @export_group("Visual Settings")
-@export var candle_width: float = 8.0 # K线宽度
-@export var spacing: float = 2.0 # 间隙
+@export var candle_width: float = 8.0
+@export var spacing: float = 2.0
 @export var bull_color: Color = Color.hex(0x00FF00FF) # 涨 (绿)
 @export var bear_color: Color = Color.hex(0xFF0000FF) # 跌 (红)
-@export var wick_color: Color = Color.WHITE # 影线颜色
-@export var bg_color: Color = Color.hex(0x111111FF) # 背景黑
+@export var wick_color: Color = Color.WHITE
+@export var bg_color: Color = Color.hex(0x111111FF)
 
 # --- 数据存储 ---
-# 定义数据结构 (使用 Dictionary 比 Object 轻量一点，但在 Godot 4 中 Typed Class 性能更好，为了通用性这里用 Dictionary)
-# 结构: { "o": float, "h": float, "l": float, "c": float }
 var _all_candles: Array = [] 
-var _visible_count: int = 100 # 当前屏幕能放下多少根
+var _visible_count: int = 100
 
 # --- 视图状态 ---
-var _end_index: int = 0 # 屏幕最右侧对应的是第几根K线（数据索引）
+var _end_index: int = 0 
 var _max_visible_price: float = 0.0
 var _min_visible_price: float = 0.0
 var _price_range: float = 1.0
@@ -26,16 +24,9 @@ var _price_range: float = 1.0
 var _is_dragging: bool = false
 var _drag_start_x: float = 0.0
 var _drag_start_index: int = 0
-var _zoom_speed: float = 1.0
-
-# --- 信号 ---
-signal chart_updated
 
 func _ready():
-	# 初始化测试数据 (如果没有 CSV，先生成数学正弦波数据测试)
-	_generate_test_data()
-	# 初始定位到最新数据
-	_end_index = _all_candles.size() - 1
+	_end_index = -1
 
 func _draw():
 	# 1. 绘制背景
@@ -44,95 +35,124 @@ func _draw():
 	if _all_candles.is_empty():
 		return
 
-	# 2. 计算可见区域的数据索引
-	# 这里的逻辑是：屏幕最右边是 _end_index
+	# --- 性能优化第一步：预计算布局参数 ---
+	var chart_height = size.y
 	var chart_width = size.x
 	var candle_full_width = candle_width + spacing
 	
-	# 计算屏幕能容纳多少根
-	_visible_count = ceili(chart_width / candle_full_width)
+	# 限制最小宽度，防止缩放过小导致一次绘制几万根而卡死
+	if candle_full_width < 1.0: candle_full_width = 1.0
 	
+	_visible_count = ceili(chart_width / candle_full_width) + 1
 	var start_index = max(0, _end_index - _visible_count)
 	var count = _end_index - start_index
+	
 	if count <= 0: return
 
-	# 3. 动态计算当前可见区域的最高/最低价 (为了做 Y 轴自适应，像 MT4 那样)
+	# 计算价格边界
 	_calculate_price_bounds(start_index, _end_index)
+	
+	# --- 性能优化第二步：内联数学计算系数 ---
+	# 避免在循环里做除法，改为乘法 (乘法比除法快)
+	# Pre-calculate calculation constants
+	var price_range_inv = 0.0
+	if _price_range > 0.0000001:
+		price_range_inv = 1.0 / _price_range
+		
+	var padding_top = chart_height * 0.05
+	var render_height = chart_height * 0.9
+	var min_p = _min_visible_price
 
-	# 4. 循环绘制每一根可见 K 线
+	# --- 性能优化第三步：准备批量绘制数组 ---
+	# 使用 PackedVector2Array 比普通 Array 快得多
+	var wick_lines = PackedVector2Array() 
+	# 虽然 Godot 没有 draw_rects (复数)，但我们至少可以把影线合并
+	
+	# 循环
 	for i in range(count):
-		var data_idx = start_index + i
+		# 从左到右绘制，为了对齐 MT4，这里假设 end_index 是屏幕最右侧
+		# 计算逻辑：index 越小越左
+		# right_offset 是相对于屏幕右边缘的偏移量
+		var data_idx = _end_index - i
+		if data_idx < 0: break
+		
 		var candle = _all_candles[data_idx]
 		
-		# X 坐标计算
-		# 屏幕最右边是 size.x. 
-		# 第 i 根的位置 = 屏幕右边 - (总数 - i) * 宽度
-		# 或者：左边位置 = i * 宽度
-		# 为了符合 MT4 习惯（最右边是新数据），我们通常从右向左推算，或者从左向右画
-		var x_pos = i * candle_full_width
+		# X 坐标：从右向左画
+		# 屏幕宽度 - (当前第几根 * 宽度) - 半个宽度修正
+		var x_pos = chart_width - (i * candle_full_width) - (candle_width * 0.5)
 		
-		# Y 坐标映射 (Price -> Pixel)
-		var y_open = _map_price_to_y(candle.o)
-		var y_close = _map_price_to_y(candle.c)
-		var y_high = _map_price_to_y(candle.h)
-		var y_low = _map_price_to_y(candle.l)
+		if x_pos < -candle_width: break # 超出左边界提前退出
 		
-		var is_bull = candle.c >= candle.o
-		var color = bull_color if is_bull else bear_color
+		# --- 内联 Y 轴映射逻辑 (Inlining) ---
+		# 原来的函数调用 _map_price_to_y 删除了
+		var o = candle.o
+		var c = candle.c
+		var h = candle.h
+		var l = candle.l
 		
-		# 绘制影线 (Line)
-		# draw_line 第一个参数是起点，第二个是终点
-		var center_x = x_pos + candle_width / 2
-		draw_line(Vector2(center_x, y_high), Vector2(center_x, y_low), wick_color, 1.0)
+		# 公式: y = padding + (1.0 - (price - min) * range_inv) * height
+		# 简化: y = padding + height - (price - min) * range_inv * height
+		# 提取常量 scale = range_inv * height
+		var val_scale = price_range_inv * render_height
+		var base_y = padding_top + render_height
 		
-		# 绘制实体 (Rect)
-		# 注意：Godot 的 draw_rect 高度不能为负，且 Y 轴向下
+		var y_open = base_y - (o - min_p) * val_scale
+		var y_close = base_y - (c - min_p) * val_scale
+		var y_high = base_y - (h - min_p) * val_scale
+		var y_low = base_y - (l - min_p) * val_scale
+		
+		# --- 收集影线数据 ---
+		wick_lines.append(Vector2(x_pos, y_high))
+		wick_lines.append(Vector2(x_pos, y_low))
+		
+		# --- 立即绘制实体 (无法批量，除非用 Mesh，但这步通常够快了) ---
+		var is_bull = c >= o
+		var rect_color = bull_color if is_bull else bear_color
+		
 		var rect_top = min(y_open, y_close)
-		var rect_height = abs(y_close - y_open)
-		# 防止十字星看不见，给个最小高度
-		if rect_height < 1.0: rect_height = 1.0 
+		var rect_h = abs(y_close - y_open)
+		if rect_h < 1.0: rect_h = 1.0
 		
-		draw_rect(Rect2(x_pos, rect_top, candle_width, rect_height), color)
+		# 注意 draw_rect 用的是左上角坐标，x_pos 是中心，所以要偏一下
+		draw_rect(Rect2(x_pos - candle_width/2.0, rect_top, candle_width, rect_h), rect_color)
 
-# --- 核心辅助逻辑 ---
+	# --- 性能优化第四步：一次性绘制所有影线 ---
+	# 这将几百次 draw_line 压缩为 1 次底层 API 调用
+	if wick_lines.size() > 0:
+		draw_multiline(wick_lines, wick_color, 1.0)
 
-# 价格转屏幕 Y 坐标
-func _map_price_to_y(price: float) -> float:
-	if _price_range == 0: return size.y / 2
-	# (价格 - 最低价) / 范围 = 0~1 的比例
-	var ratio = (price - _min_visible_price) / _price_range
-	# 屏幕坐标系 Y 向下，价格越高 Y 越小，需要反转 (1.0 - ratio)
-	# 留出 5% 的上下边距 padding
-	var padding = size.y * 0.05
-	var render_height = size.y * 0.9
-	return padding + (1.0 - ratio) * render_height
+# --- 辅助逻辑保持不变 ---
 
-# 计算这种可见范围内的最大最小值
 func _calculate_price_bounds(start_idx: int, end_idx: int):
-	var min_p = 99999999.0
-	var max_p = -99999999.0
+	# 重置极值
+	_min_visible_price = INF
+	_max_visible_price = -INF
 	
-	for i in range(start_idx, end_idx + 1):
-		if i >= _all_candles.size(): break
-		var c = _all_candles[i]
-		if c.l < min_p: min_p = c.l
-		if c.h > max_p: max_p = c.h
-		
-	_min_visible_price = min_p
-	_max_visible_price = max_p
-	_price_range = max_p - min_p
+	# 这里增加一个步长保护，防止数据量过大时循环太久
+	# 虽然通常可视区域只有几百根，但为了安全
+	start_idx = clamp(start_idx, 0, _all_candles.size() - 1)
+	end_idx = clamp(end_idx, 0, _all_candles.size() - 1)
+	
+	if start_idx > end_idx: return
 
-# --- 交互逻辑 (Input Handling) ---
+	# 简单的循环寻找极值 (对于几百个元素，这比 Array.max() 快，因为只遍历部分)
+	for i in range(start_idx, end_idx + 1):
+		var c = _all_candles[i]
+		if c.l < _min_visible_price: _min_visible_price = c.l
+		if c.h > _max_visible_price: _max_visible_price = c.h
+	
+	_price_range = _max_visible_price - _min_visible_price
+	if _price_range == 0: _price_range = 1.0
+
+# --- 交互逻辑保持基本一致 ---
 
 func _gui_input(event):
-	# 1. 缩放 (鼠标滚轮)
 	if event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
 			_zoom_chart(1.1)
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			_zoom_chart(0.9)
-			
-		# 2. 拖拽开始/结束 (鼠标中键或左键)
 		if event.button_index == MOUSE_BUTTON_LEFT:
 			if event.pressed:
 				_is_dragging = true
@@ -141,63 +161,38 @@ func _gui_input(event):
 			else:
 				_is_dragging = false
 
-	# 3. 拖拽过程
 	if event is InputEventMouseMotion and _is_dragging:
 		var delta_x = event.position.x - _drag_start_x
 		var candle_full_width = candle_width + spacing
-		# 移动了多少根 K 线
 		var move_count = int(delta_x / candle_full_width)
 		
-		# 拖拽时，向右拖动看历史 (index 减小)，向左拖动看未来 (index 增加)
-		# 注意这里逻辑反一下，因为我们是拖动视图
-		_end_index = _drag_start_index - move_count
+		# 修正: 拖拽方向
+		_end_index = _drag_start_index + move_count
 		_clamp_view()
 		queue_redraw()
 
 func _zoom_chart(factor: float):
 	candle_width *= factor
-	# 限制一下大小
 	candle_width = clamp(candle_width, 1.0, 100.0)
 	queue_redraw()
 
 func _clamp_view():
-	# 限制 end_index 不越界
 	_end_index = clamp(_end_index, 0, _all_candles.size() - 1)
 
-# --- 外部接口：回放用 ---
+# --- 公开接口 ---
 
-# 设置所有历史数据
 func set_history_data(data: Array):
 	_all_candles = data
 	_end_index = data.size() - 1
 	queue_redraw()
 
-# 追加新的一根 K 线 (模拟实时数据或回放推进)
 func append_candle(data: Dictionary):
 	_all_candles.append(data)
-	# 如果用户正在看最新的位置，自动跟随
-	if _end_index == _all_candles.size() - 2:
-		_end_index += 1
+	if _end_index >= _all_candles.size() - 2:
+		_end_index = _all_candles.size() - 1
 	queue_redraw()
 
-# 强制跳转到某一个索引 (回放控制)
 func jump_to_index(idx: int):
 	_end_index = idx
 	_clamp_view()
 	queue_redraw()
-
-# --- 测试数据生成器 ---
-func _generate_test_data():
-	var price = 100.0
-	for i in range(2000):
-		var change = randf_range(-2.0, 2.0)
-		var o = price
-		var c = price + change
-		var h = max(o, c) + randf_range(0.0, 1.0)
-		var l = min(o, c) - randf_range(0.0, 1.0)
-		
-		# 简单的 Dictionary 结构
-		_all_candles.append({
-			"t": i, "o": o, "h": h, "l": l, "c": c
-		})
-		price = c
