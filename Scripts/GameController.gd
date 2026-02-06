@@ -21,6 +21,9 @@ extends Node
 # 绘图工具 UI
 @onready var btn_trendline: Button = %BtnTrendLine
 
+# 指标 UI
+@onready var btn_add_ma: Button = %BtnAddMA
+
 # --- 核心子系统 ---
 var account: AccountManager # 账户核心
 
@@ -99,6 +102,14 @@ func _setup_ui_signals():
 	if btn_trendline:
 		btn_trendline.pressed.connect(func():
 			chart.start_drawing("TrendLine")
+		)
+	
+	# 指标工具
+	if btn_add_ma:
+		btn_add_ma.pressed.connect(func():
+			print("计算并添加 MA14...")
+			chart.calculate_and_add_ma(14, Color.CYAN)
+			chart.calculate_and_add_ma(30, Color.MAGENTA) # 顺便加个 MA30
 		)
 
 # --- 交易执行包装器 ---

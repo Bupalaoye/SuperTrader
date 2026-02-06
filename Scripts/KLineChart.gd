@@ -22,7 +22,8 @@ enum Mode {
 var _overlay: CrosshairOverlay
 # --- 新增变量 ---
 var _order_layer: OrderOverlay
-var _drawing_layer: DrawingLayer 
+var _drawing_layer: DrawingLayer
+var _indicator_layer: IndicatorLayer 
 
 # --- 数据存储 ---
 var _all_candles: Array = [] 
@@ -52,6 +53,13 @@ func _ready():
 	_order_layer.name = "OrderOverlay"
 	add_child(_order_layer)
 	_order_layer.setup(self) # 把自己传过去
+	
+	# [新增] 初始化指标层 (放在 K 线之后，Order 之前，保证线在蜡烛上面但在订单下面)
+	_indicator_layer = IndicatorLayer.new()
+	_indicator_layer.name = "IndicatorLayer"
+	add_child(_indicator_layer)
+	move_child(_indicator_layer, 0) # 也可以设为 index 1
+	_indicator_layer.setup(self)
 	
 	# [新增] 初始化绘图层 (建议放在 OrderOverlay 之上，Crosshair 之下)
 	_drawing_layer = DrawingLayer.new()
@@ -111,6 +119,10 @@ func _draw():
 	# 每次 Chart 重绘时(比如拖拽、缩放、新K线)，通知 OrderLayer 也跟着对齐重绘
 	if _order_layer:
 		_order_layer.queue_redraw()
+	
+	# 通知指标层重绘
+	if _indicator_layer:
+		_indicator_layer.queue_redraw()
 
 func _gui_input(event):
 	# 1. 鼠标按键事件
@@ -388,3 +400,31 @@ func get_candle_width() -> float:
 func start_drawing(tool_name: String):
 	if _drawing_layer:
 		_drawing_layer.start_tool(tool_name)
+
+# [新增] 计算指标
+func calculate_and_add_ma(period: int, color: Color):
+	# 1. 提取收盘价数组
+	var closes = []
+	for candle in _all_candles:
+		closes.append(candle.c)
+		
+	# 2. 计算
+	var ma_data = IndicatorCalculator.calculate_sma(closes, period)
+	
+	# 3. 添加到图层
+	if _indicator_layer:
+		_indicator_layer.add_indicator(ma_data, color, 1.5)
+
+# [新增] 图层需要的辅助查询接口
+func get_first_visible_index() -> int:
+	var vis_count = ceili(size.x / (candle_width + spacing))
+	return max(0, _end_index - vis_count)
+
+func get_last_visible_index() -> int:
+	return _end_index
+
+func get_x_by_index_public(idx: int) -> float:
+	var candle_full_width = candle_width + spacing
+	var start_idx = get_first_visible_index()
+	var relative = idx - start_idx
+	return relative * candle_full_width + candle_width / 2.0
