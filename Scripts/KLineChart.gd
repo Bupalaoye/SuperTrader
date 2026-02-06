@@ -33,6 +33,8 @@ var _price_range: float = 1.0
 
 # --- 交互状态 ---
 var _current_mode: Mode = Mode.NONE # 单源真理
+var _measure_start_pos: Vector2 = Vector2.ZERO   # 像素坐标 (用来画线起点)
+var _measure_start_data: Dictionary = {}         # 业务数据 (用来算价格差和Bar数)
 var _drag_start_x: float = 0.0
 var _drag_start_index: int = 0
 var _zoom_speed: float = 1.0
@@ -102,28 +104,34 @@ func _gui_input(event):
 			_toggle_crosshair_mode()
 			accept_event() 
 			return
-
-		# --- B. 滚轮 ---
+		# --- B. 滚轮 (缩放) ---
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
 			_zoom_chart(1.1)
+			# 如果在十字模式下缩放，需要立即更新光标位置的数据
+			if _current_mode == Mode.CROSSHAIR: _push_data_to_overlay(get_local_mouse_position())
 			accept_event()
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			_zoom_chart(0.9)
+			if _current_mode == Mode.CROSSHAIR: _push_data_to_overlay(get_local_mouse_position())
 			accept_event()
 			
-		# --- C. 左键 ---
+		# --- C. 左键 (核心交互逻辑) ---
 		elif event.button_index == MOUSE_BUTTON_LEFT:
 			if event.pressed:
+				# 按下逻辑
 				match _current_mode:
 					Mode.NONE:
 						_start_drag(event.position.x)
 					Mode.CROSSHAIR:
+						# 在十字模式下按左键 -> 开始量尺
 						_start_measure(event.position)
 			else:
+				# 松开逻辑
 				match _current_mode:
 					Mode.DRAG_VIEW:
 						_stop_drag()
 					Mode.MEASURE:
+						# 松开量尺 -> 回到十字模式
 						_stop_measure()
 	# 2. 鼠标移动事件
 	if event is InputEventMouseMotion:
@@ -132,12 +140,52 @@ func _gui_input(event):
 				_process_drag(event.position.x)
 			
 			Mode.CROSSHAIR, Mode.MEASURE:
-				# --- Phase 2 新增逻辑: 像素转数据 ---
-				var data = _get_data_at_mouse(event.position)
-				
-				# 通知 Overlay 更新，不仅传位置，还传价格和时间
-				if _overlay:
-					_overlay.update_crosshair(event.position, data)
+				# 统一的数据推送逻辑
+				_push_data_to_overlay(event.position)
+
+# --- 数据打包与分发 (Protocol Implementation) ---
+func _push_data_to_overlay(mouse_pos: Vector2):
+	if not _overlay: return
+	
+	# 1. 获取当前鼠标点的数据
+	var current_data = _get_data_at_mouse(mouse_pos)
+	
+	# 2. 构建基础 Payload
+	var payload = current_data.duplicate()
+	payload["current_pos"] = mouse_pos # 补充像素坐标
+	
+	# 3. 如果是量尺模式，注入起始点数据
+	if _current_mode == Mode.MEASURE:
+		payload["is_measuring"] = true
+		payload["start_pos"] = _measure_start_pos
+		# 从缓存的起始数据中提取关键值
+		payload["start_price"] = _measure_start_data.get("price", 0.0)
+		payload["start_index"] = _measure_start_data.get("index", 0)
+	else:
+		payload["is_measuring"] = false
+	
+	# 4. 发送给 View 层
+	_overlay.update_crosshair(mouse_pos, payload)
+
+# 进入测量模式
+func _start_measure(pos: Vector2):
+	_current_mode = Mode.MEASURE
+	
+	# 记录“按下那一刻”的状态
+	_measure_start_pos = pos
+	_measure_start_data = _get_data_at_mouse(pos)
+	
+	# 立即刷新一次 UI
+	_push_data_to_overlay(pos)
+	# print("状态切换: MEASURE (Anchor: %.2f)" % _measure_start_data.price)
+# 结束测量模式
+func _stop_measure():
+	# 关键：松手后不回到 NONE，而是回到 CROSSHAIR，符合 MT4/TradingView 习惯
+	_current_mode = Mode.CROSSHAIR
+	
+	# 推送一次数据，把 is_measuring 标记为 false，让 Overlay 清除那根线
+	_push_data_to_overlay(get_local_mouse_position())
+	# print("状态切换: CROSSHAIR")
 
 # 把鼠标位置转换成具体的业务数据
 func _get_data_at_mouse(mouse_pos: Vector2) -> Dictionary:
@@ -201,22 +249,15 @@ func _get_price_at_y(y: float) -> float:
 
 func _toggle_crosshair_mode():
 	if _current_mode == Mode.CROSSHAIR or _current_mode == Mode.MEASURE:
-		# 退出十字模式，回到普通模式
 		_current_mode = Mode.NONE
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		if _overlay: _overlay.set_active(false)
 	else:
-		# 进入十字模式
 		_current_mode = Mode.CROSSHAIR
-		
-		# Input.mouse_mode = Input.MOUSE_MODE_HIDDEN 
+		# Input.mouse_mode = Input.MOUSE_MODE_HIDDEN # 可选：隐藏系统鼠标
 		if _overlay: 
 			_overlay.set_active(true)
-			
-			# 因为 update_crosshair 现在需要两个参数，所以初始化时也要计算一下数据
-			var mouse_pos = get_local_mouse_position()
-			var data = _get_data_at_mouse(mouse_pos)
-			_overlay.update_crosshair(mouse_pos, data)
+			_push_data_to_overlay(get_local_mouse_position())
 
 func _start_drag(mouse_x: float):
 	_current_mode = Mode.DRAG_VIEW
@@ -235,15 +276,6 @@ func _process_drag(mouse_x: float):
 	_clamp_view()
 	queue_redraw()
 
-# 量尺暂未实现具体绘制（第二/三阶段内容），先搭好状态切换
-func _start_measure(pos: Vector2):
-	_current_mode = Mode.MEASURE
-	print("开始测量 (Phase 3 待实现)")
-
-func _stop_measure():
-	# 松手后回到十字模式
-	_current_mode = Mode.CROSSHAIR
-	print("结束测量")
 
 # --- 辅助函数保持不变 ---
 func _map_price_to_y(price: float) -> float:

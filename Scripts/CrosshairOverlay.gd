@@ -68,9 +68,19 @@ func _draw():
 func update_crosshair(mouse_pixel_pos: Vector2, data: Dictionary):
 	_mouse_pos = mouse_pixel_pos
 	_data = data
+	
+	# 调试日志：验证第三阶段逻辑是否生效
+	# 如果正在测量，打印一下价差，看看数据对不对
+	if _data.get("is_measuring", false):
+		var p_start = _data.get("start_price", 0.0)
+		var p_curr = _data.get("price", 0.0) # 注意：KLineChart 传过来的是 price
+		var diff = p_curr - p_start
+		# print("Overlay 收到量尺数据 -> 价差: %.5f" % diff)
+	
 	queue_redraw()
-
 func set_active(active: bool):
 	_is_active = active
 	visible = active
+	if not active:
+		_data = {} # 清空数据防止残留
 	queue_redraw()
