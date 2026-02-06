@@ -359,10 +359,11 @@ func append_candle(data: Dictionary):
 		_end_index += 1
 	queue_redraw()
 
-# [新增] 更新现价线
-func update_current_price(price: float):
+# [新增] 更新现价线 (支持倒计时)
+func update_current_price(price: float, seconds_left: int = 0):
 	if _current_price_layer:
-		_current_price_layer.update_price(price)
+		# 调用新的 update_info 接口
+		_current_price_layer.update_info(price, seconds_left)
 
 # [新增] 更新最后一根 K 线的数据 (用于模拟 Tick 波动)
 func update_last_candle(data: Dictionary):

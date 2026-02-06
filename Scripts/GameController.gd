@@ -40,6 +40,10 @@ var close_dialog: CloseOrderDialog
 var order_window: OrderWindow
 var order_window_overlay: Control
 
+# --- 噪声生成 (Perlin Noise) ---
+var _noise: FastNoiseLite
+var _noise_offset: float = 0.0 # 噪声的滚动偏移量
+
 # --- 核心数据 ---
 var full_history_data: Array = [] 
 var current_playback_index: int = 0 
@@ -57,6 +61,12 @@ func _ready():
 	add_child(sfx_player)
 	# 如果你有资源，可以取消注释并加载
 	# sfx_player.stream = load("res://Assets/Sounds/close.wav")
+	
+	# [新增] 初始化噪声生成器
+	_noise = FastNoiseLite.new()
+	_noise.seed = randi()
+	_noise.frequency = 0.2   # 频率越高，抖动越剧烈
+	_noise.fractal_octaves = 3 
 	
 	# [新增] 初始化确认弹窗
 	confirm_dialog = ModifyConfirmDialog.new()
@@ -152,9 +162,10 @@ func _ready():
 	order_window_overlay = Control.new()
 	order_window_overlay.set_anchors_preset(Control.PRESET_FULL_RECT) # 全屏
 	order_window_overlay.visible = false
-	# 创建一个黑色半透明背景
+	# 创建一个黑色背景（改为透明）
 	var bg = ColorRect.new()
-	bg.color = Color(0, 0, 0, 0.5)
+	# [关键修改] Alpha 改为 0，完全透明，不再变暗
+	bg.color = Color(0, 0, 0, 0.0) 
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	order_window_overlay.add_child(bg)
 	# 点击背景关闭窗口
@@ -352,7 +363,7 @@ func _play_trade_sound():
 		# 如果没有音频文件，打印日志代替
 		print(">> [SOUND] Cash Register/Close Sound <<")
 
-# [新增] 模拟一根 K 线内部的波动
+# [重写] 模拟自然波动 K 线 (Perlin Noise + Path Interpolation)
 func _simulate_candle_ticks(final_data: Dictionary):
 	var t_str = final_data.t
 	var o = final_data.o
@@ -360,56 +371,109 @@ func _simulate_candle_ticks(final_data: Dictionary):
 	var l = final_data.l
 	var c = final_data.c
 	
-	# 构建一个临时 K 线对象
+	# 1. 确定波动路径 (Path Planning)
+	# 真实市场往往先去测试反方向，再走主趋势
+	# 简单逻辑：
+	# 如果是阳线 (C >= O): 路径通常是 Open -> Low -> High -> Close
+	# 如果是阴线 (C < O):  路径通常是 Open -> High -> Low -> Close
+	# (当然这只是大概率，为了模拟器简单点先定死路径)
+	
+	var path_points = []
+	path_points.append(o)
+	
+	if c >= o:
+		# 阳线：先砸盘(Low)，再拉升(High)，最后收盘
+		if abs(l - o) > 0.00001: path_points.append(l)
+		if abs(h - l) > 0.00001: path_points.append(h)
+	else:
+		# 阴线：先诱多(High)，再砸盘(Low)，最后收盘
+		if abs(h - o) > 0.00001: path_points.append(h)
+		if abs(l - h) > 0.00001: path_points.append(l)
+		
+	path_points.append(c)
+	
+	# 2. 也是初始化临时 Candle
 	var temp_candle = {
 		"t": t_str,
 		"o": o,
-		"h": o, # 初始最高也是开盘
-		"l": o, # 初始最低也是开盘
-		"c": o  # 初始收盘也是开盘
+		"h": o, 
+		"l": o, 
+		"c": o  
 	}
 	
-	# --- Tick 1: 开盘 (Open) ---
-	_process_tick(temp_candle, o)
-	await get_tree().create_timer(tick_delay).timeout
-	if not is_playing: return # 允许中途暂停
+	# 3. 分配时间片
+	# 假设每根 K 线我们模拟 40 次跳动 (Tick)
+	# (你可以通过调大 total_ticks 让波动更细腻，但耗时更长)
+	var total_ticks = 40 
+	var fake_seconds_per_tick = 60.0 / float(total_ticks) # 倒计时用
 	
-	# --- Tick 2: 随机先去 High 还是 Low ---
-	# 为了真实感，我们简单随机一下顺序
-	# 假设逻辑：先去 Low，再去 High，最后去 Close (或者反之)
+	# 4. 开始遍历路径点
+	var points_count = path_points.size()
+	if points_count < 2: 
+		_process_tick(temp_candle, c, 0)
+		return
+
+	# 我们把 total_ticks 分配给 path 的每一段
+	# 例如 O->L, L->H, H->C 是 3 段, 每段分配 total_ticks / 3
+	var segments = points_count - 1
+	var ticks_per_segment = int(total_ticks / segments)
 	
-	# 这里简单处理：Open -> Low -> High -> Close
-	# 你可以在未来加入更复杂的随机插值算法
+	var current_tick_idx = 0
 	
-	# 模拟去往 Low 的过程
-	temp_candle.l = l
-	temp_candle.c = l # 现价跌到 Low
-	# 注意：如果 Low 低于当前的 Open，Height 保持不变
+	for i in range(segments):
+		var p_start = path_points[i]
+		var p_end = path_points[i+1]
+		
+		for j in range(ticks_per_segment):
+			if not is_playing: return
+			
+			current_tick_idx += 1
+			# 进度 t (0.0 to 1.0)
+			var t = float(j) / float(ticks_per_segment)
+			
+			# A. 线性插值 (趋势)
+			var linear_p = lerp(p_start, p_end, t)
+			
+			# B. 叠加噪声 (波动)
+			_noise_offset += 0.1
+			var n_val = _noise.get_noise_1d(_noise_offset * 100.0) # -1 to 1
+			
+			# 动态噪声强度：两头小，中间大 (两头必须准确对齐 O/H/L/C)
+			# 使用 sin(t * PI) 实现 0 -> 1 -> 0 的抛物线强度
+			var vol_scale = 0.0 # 波动幅度
+			# 计算这段距离的价差，作为波动基准
+			var seg_diff = abs(p_end - p_start)
+			vol_scale = seg_diff * 0.3 * sin(t * PI) 
+			
+			var noisy_price = linear_p + (n_val * vol_scale)
+			
+			# 根据 noisy_price 更新 H/L
+			temp_candle.c = noisy_price
+			if noisy_price > temp_candle.h: temp_candle.h = noisy_price
+			if noisy_price < temp_candle.l: temp_candle.l = noisy_price
+			
+			# 计算倒计时 (假定每分钟 60 秒)
+			var secs_remain = int(60 - (current_tick_idx * fake_seconds_per_tick))
+			if secs_remain < 0: secs_remain = 0
+			
+			# 提交
+			_process_tick(temp_candle, noisy_price, secs_remain)
+			
+			# 等待
+			await get_tree().create_timer(tick_delay).timeout
 	
-	_process_tick(temp_candle, l)
-	await get_tree().create_timer(tick_delay).timeout
-	if not is_playing: return
-	
-	# 模拟去往 High 的过程
-	temp_candle.h = h
-	temp_candle.c = h # 现价拉到 High
-	
-	_process_tick(temp_candle, h)
-	await get_tree().create_timer(tick_delay).timeout
-	if not is_playing: return
-	
-	# --- Tick 3: 收盘 (Close) ---
+	# 5. 最后修正 (确保 Close 价绝对准确)
 	temp_candle.c = c
-	# 最终状态确认
-	_process_tick(temp_candle, c)
+	temp_candle.h = h # 确保历史最高最低是对的
+	temp_candle.l = l
+	_process_tick(temp_candle, c, 0)
 	
-	# 缓存更新，确保交易逻辑用到最新的全量数据
+	# 更新缓存
 	_cached_last_candle = final_data 
 
-# [新增] 处理单个 Tick 的通用逻辑
-func _process_tick(candle_state: Dictionary, current_price: float):
-	# 1. 如果是这根 K 线的第一次(Open)，需要 append，否则是 update
-	# 判断依据：_cached_last_candle 的时间是否和当前不同
+# [修改] 参数增加 seconds_left
+func _process_tick(candle_state: Dictionary, current_price: float, seconds_left: int):
+	# 1. 如果是这根 K 线的第一次(Time变了)，需要 append，否则是 update
 	if _cached_last_candle.get("t") != candle_state.t:
 		chart.append_candle(candle_state.duplicate())
 	else:
@@ -418,18 +482,16 @@ func _process_tick(candle_state: Dictionary, current_price: float):
 	# 更新缓存
 	_cached_last_candle = candle_state.duplicate()
 	
-	# 2. 更新现价线 (UI)
-	chart.update_current_price(current_price)
+	# 2. 更新现价线 (UI) -> 传入倒计时
+	chart.update_current_price(current_price, seconds_left)
 	
-	# 3. 喂给账户系统计算盈亏 (核心交易逻辑)
+	# 3. 喂给账户系统
 	account.update_equity(current_price)
 	
-	# [新增] 如果订单窗口是打开的，更新上面的价格标签
+	# 更新订单窗口报价
 	if order_window and order_window.visible:
-		# 模拟 bid/ask，这里简单传入 current_price
 		order_window.update_market_data(current_price, current_price)
 	
 	# 4. 刷新订单层
-	# 注意：Tick 频繁更新历史订单可能费性能，这里只传 Active 也行
-	# 但为了视觉连贯，都传
+	# 偶尔略过绘制以提升性能？不用，现在电脑快。
 	chart.update_visual_orders(account.get_active_orders(), account.get_history_orders())
