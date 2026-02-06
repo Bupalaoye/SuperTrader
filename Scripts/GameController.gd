@@ -365,9 +365,6 @@ func _play_trade_sound():
 
 #  带详细 Log 的慢速 K 线生成器
 func _simulate_candle_ticks(final_data: Dictionary):
-	print("\n========== 开始模拟新 K 线 ==========")
-	print("目标: Time=%s | Open=%.5f | High=%.5f | Low=%.5f | Close=%.5f" % [final_data.t, final_data.o, final_data.h, final_data.l, final_data.c])
-	
 	var t_str = final_data.t
 	var o = final_data.o
 	
@@ -421,7 +418,6 @@ func _simulate_candle_ticks(final_data: Dictionary):
 		await get_tree().create_timer(0.05).timeout
 
 	# 4. 完美收官
-	print("========== K 线模拟结束，定格数据 ==========")
 	_process_tick(final_data, final_data.c, 0)
 	_cached_last_candle = final_data
 # [修复版] 强制生成高密度的路径点
@@ -479,7 +475,6 @@ func _generate_tick_path(o: float, h: float, l: float, c: float) -> Array[float]
 	# 补上终点，确保数据闭环
 	result_ticks.append(c)
 	
-	print("[DEBUG] 生成路径成功: 关键点 %d 个 -> 最终 Ticks %d 个" % [anchors.size(), result_ticks.size()])
 	return result_ticks
 
 # [修改] 参数增加 seconds_left
