@@ -402,10 +402,13 @@ func _simulate_candle_ticks(final_data: Dictionary):
 	}
 	
 	# 3. 分配时间片
-	# 假设每根 K 线我们模拟 40 次跳动 (Tick)
-	# (你可以通过调大 total_ticks 让波动更细腻，但耗时更长)
-	var total_ticks = 40 
-	var fake_seconds_per_tick = 60.0 / float(total_ticks) # 倒计时用
+	# 假设每根 K 线我们模拟 60 次跳动 (Tick)，让动画更平滑
+	var total_ticks = 60 
+	# 倒计时逻辑：模拟 60秒 / total_ticks = 每跳代表的秒数
+	var fake_seconds_per_tick = 60.0 / float(total_ticks)
+
+	# 强制图表滚动到最右边，确保看得到当前 K 线
+	chart.scroll_to_end()
 	
 	# 4. 开始遍历路径点
 	var points_count = path_points.size()
@@ -435,7 +438,7 @@ func _simulate_candle_ticks(final_data: Dictionary):
 			var linear_p = lerp(p_start, p_end, t)
 			
 			# B. 叠加噪声 (波动)
-			_noise_offset += 0.1
+			_noise_offset += 0.05
 			var n_val = _noise.get_noise_1d(_noise_offset * 100.0) # -1 to 1
 			
 			# 动态噪声强度：两头小，中间大 (两头必须准确对齐 O/H/L/C)
@@ -443,7 +446,7 @@ func _simulate_candle_ticks(final_data: Dictionary):
 			var vol_scale = 0.0 # 波动幅度
 			# 计算这段距离的价差，作为波动基准
 			var seg_diff = abs(p_end - p_start)
-			vol_scale = seg_diff * 0.3 * sin(t * PI) 
+			vol_scale = seg_diff * 0.5 * sin(t * PI) 
 			
 			var noisy_price = linear_p + (n_val * vol_scale)
 			
@@ -476,6 +479,8 @@ func _process_tick(candle_state: Dictionary, current_price: float, seconds_left:
 	# 1. 如果是这根 K 线的第一次(Time变了)，需要 append，否则是 update
 	if _cached_last_candle.get("t") != candle_state.t:
 		chart.append_candle(candle_state.duplicate())
+		# 新 K 线生成时，强制滚屏，确保可见
+		chart.scroll_to_end()
 	else:
 		chart.update_last_candle(candle_state.duplicate())
 	

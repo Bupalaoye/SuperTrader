@@ -368,16 +368,23 @@ func update_current_price(price: float, seconds_left: int = 0):
 # [新增] 更新最后一根 K 线的数据 (用于模拟 Tick 波动)
 func update_last_candle(data: Dictionary):
 	if _all_candles.is_empty(): return
-	
-	# 修改最后一个数据
+
+	# 1. 更新数据
 	_all_candles[_all_candles.size() - 1] = data
-	
-	# 强制重绘 K 线图 (虽然有点费性能，但为了看到 K 线伸缩是必须的)
+
+	# 2. 关键修复：因为 High/Low 变了，必须重新计算Y轴缩放范围，
+	# 否则新长出来的 K 线可能超出屏幕或看起来是扁的
+	# 我们获取当前可见范围的索引进行重算
+	var vis_count = ceili(size.x / (candle_width + spacing))
+	var start_idx = max(0, _end_index - vis_count)
+	_calculate_price_bounds(start_idx, _end_index)
+
+	# 3. 强制重绘
 	queue_redraw()
-	
-	# 同时通知订单层重绘 (因为现价变了，订单盈亏可能变，虽然订单线本身不动，但为了严谨)
+
+	# 4. 通知所有图层刷新
 	if _order_layer: _order_layer.queue_redraw()
-	# 指标层通常不需要在 Tick 级别重绘，除非你想做实时指标，这里先跳过以省性能
+	if _current_price_layer: _current_price_layer.queue_redraw()
 
 func jump_to_index(idx: int):
 	_end_index = idx
@@ -501,3 +508,18 @@ func get_time_by_index_public(idx: int) -> String:
 	if idx >= 0 and idx < _all_candles.size():
 		return _all_candles[idx].t
 	return ""
+
+# --- 新增: 获取最后一根 K 线在屏幕上的中心 X 坐标
+func get_last_candle_visual_x() -> float:
+	if _all_candles.is_empty(): return 0.0
+
+	# 复用现有的坐标计算逻辑
+	# 最后一根数据的索引
+	var last_data_idx = _all_candles.size() - 1
+	return get_x_by_index_public(last_data_idx)
+
+# --- 新增: 强制视图滚动到最右侧 (确保用户能看到正在生成的 K 线)
+func scroll_to_end():
+	_end_index = _all_candles.size() - 1
+	_clamp_view() # 确保不越界
+	queue_redraw()
