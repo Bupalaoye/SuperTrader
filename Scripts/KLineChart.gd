@@ -25,7 +25,9 @@ var _order_layer: OrderOverlay
 var _drawing_layer: DrawingLayer
 var _indicator_layer: IndicatorLayer
 # [新增] 现价线层
-var _current_price_layer: CurrentPriceLayer 
+var _current_price_layer: CurrentPriceLayer
+# [新增] 网格层
+var _grid_layer: GridLayer 
 
 # --- 数据存储 ---
 var _all_candles: Array = [] 
@@ -56,6 +58,17 @@ func _ready():
 	# 2. K线 (KLineChart 自身的 _draw 画在最底层)
 	_generate_test_data()
 	_end_index = _all_candles.size() - 1
+
+	# 1. 网格层 (GridLayer)
+	_grid_layer = GridLayer.new()
+	_grid_layer.name = "GridLayer"
+	add_child(_grid_layer)
+	
+	# [修改] 传入 bg_color 
+	_grid_layer.setup(self, bg_color)
+	
+	# [关键] 这一行绝对不能少，保证 Grid 在 Chart 之前画
+	_grid_layer.show_behind_parent = true
 
 	# 3. 指标层
 	_indicator_layer = IndicatorLayer.new()
@@ -93,7 +106,13 @@ func _setup_overlay():
 	_overlay.set_active(false)
 
 func _draw():
-	draw_rect(Rect2(Vector2.ZERO, size), bg_color)
+	# [修改] 删除了 draw_rect - 背景现在由 GridLayer 负责
+	# 现在的绘制逻辑是：
+	# 1. GridLayer._draw (画背景 + 网格) -> 因为 show_behind_parent
+	# 2. KLineChart._draw (画蜡烛)      -> 因为这是父节点
+	
+	# [新增] 触发网格的一起重绘
+	if _grid_layer: _grid_layer.queue_redraw()
 	
 	if _all_candles.is_empty():
 		return
@@ -459,3 +478,17 @@ func get_x_by_index_public(idx: int) -> float:
 	var start_idx = get_first_visible_index()
 	var relative = idx - start_idx
 	return relative * candle_full_width + candle_width / 2.0
+
+# --- 网格层使用的接口 ---
+
+func get_min_visible_price() -> float:
+	return _min_visible_price
+
+func get_max_visible_price() -> float:
+	return _max_visible_price
+
+# 获取指定 Index 的时间文本
+func get_time_by_index_public(idx: int) -> String:
+	if idx >= 0 and idx < _all_candles.size():
+		return _all_candles[idx].t
+	return ""
