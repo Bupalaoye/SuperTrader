@@ -554,3 +554,46 @@ func scroll_to_end():
 	_end_index = _all_candles.size() - 1
 	_clamp_view() # 确保不越界
 	queue_redraw()
+
+
+# [新增] 计算并添加布林带
+func calculate_and_add_bollinger(period: int = 20, multiplier: float = 2.0, color: Color = Color.TEAL):
+	# 1. 准备数据
+	# 为了提高效率，这里最好只提取 Close 数组
+	var closes = []
+	for c in _all_candles:
+		closes.append(c.c)
+	
+	if closes.is_empty(): return
+
+	# 2. 计算 (调用 IndicatorCalculator)
+	var result_dict = IndicatorCalculator.calculate_bollinger_bands(closes, period, multiplier)
+	
+	# 3. 添加到图层 (新接口)
+	# 指标层的 add_band_indicator 会自动处理半透明填充
+	if _indicator_layer:
+		# 旧接口是 add_indicator，我们需要兼容或区分
+		# 这里我们直接修改 _indicator_layer 的代码，所以直接用
+		_indicator_layer.add_band_indicator(result_dict, color, 1.0)
+		
+	print("已添加布林带: N=%d, K=%.1f" % [period, multiplier])
+
+# [新增] 计算并显示分型 (Fractals)
+func calculate_and_add_fractals():
+	if _all_candles.size() < 5: return
+	
+	# 1. 计算
+	var result = IndicatorCalculator.calculate_fractals(_all_candles)
+	
+	# result = {"highs": {index: price}, "lows": {index: price}}
+	
+	if _indicator_layer:
+		# 2. 绘制顶分型 (红色向下箭头)
+		# is_up_arrow = false
+		_indicator_layer.add_marker_indicator(result.highs, Color.RED, false)
+		
+		# 3. 绘制底分型 (绿色向上箭头)
+		# is_up_arrow = true
+		_indicator_layer.add_marker_indicator(result.lows, Color.GREEN, true)
+		
+	print("已添加分型标记 (Fractals)")

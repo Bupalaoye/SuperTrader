@@ -187,6 +187,7 @@ func _ready():
 	order_window.market_order_requested.connect(_on_order_window_submit)
 	order_window.window_closed.connect(func(): order_window_overlay.visible = false)
 
+
 	print("系统就绪! 请加载 CSV 数据。")
 
 	
@@ -228,6 +229,8 @@ func _setup_ui_signals():
 			print("计算并添加 MA14...")
 			chart.calculate_and_add_ma(14, Color.CYAN)
 			chart.calculate_and_add_ma(30, Color.MAGENTA) # 顺便加个 MA30
+			# 同时添加分型
+			chart.calculate_and_add_fractals()
 		)
 
 # --- 交易执行包装器 ---
@@ -246,7 +249,7 @@ func _execute_trade(type: OrderData.Type):
 
 # --- 订单窗口接口 ---
 
-# 打开订单窗口
+# 打开订单窗口 (集成 ATR 自动止损计算)
 func _open_order_window(default_type: OrderData.Type):
 	if _cached_last_candle.is_empty():
 		print("没有数据，无法交易")
@@ -254,17 +257,43 @@ func _open_order_window(default_type: OrderData.Type):
 		
 	var price = _cached_last_candle.c
 	
-	# 显示遮罩和窗口
+	# --- 智能风控计算 (ATR) ---
+	var suggested_sl = 0.0
+	var suggested_tp = 0.0
+	
+	# 1. 获取最近的 ATR (周期 14)
+	# 注意：为了性能，这里我们简单计算，或者如果已经有缓存最好。
+	# 由于计算整个历史的 ATR 很快，直接算即可。
+	var atr_values = IndicatorCalculator.calculate_atr(full_history_data, 14)
+	var current_idx = current_playback_index
+	
+	# 安全检查：确保索引不越界
+	if current_idx < atr_values.size():
+		var current_atr = atr_values[current_idx]
+		if not is_nan(current_atr) and current_atr > 0:
+			print("当前 ATR(14): %.5f" % current_atr)
+			
+			# 策略：止损 = 1.5倍 ATR, 止盈 = 2.0倍 ATR (盈亏比 1:1.3)
+			var sl_dist = current_atr * 1.5
+			var tp_dist = current_atr * 2.5 # 稍微贪婪一点
+			
+			if default_type == OrderData.Type.BUY:
+				suggested_sl = price - sl_dist
+				suggested_tp = price + tp_dist
+			else:
+				suggested_sl = price + sl_dist
+				suggested_tp = price - tp_dist
+	
+	# 显式显示遮罩和窗口
 	order_window_overlay.visible = true
 	order_window.visible = true
-	order_window_overlay.move_to_front() # 确保在最前
+	order_window_overlay.move_to_front() 
 	
-	# 初始化数值 (默认 0.1 手，SL/TP 为 0)
-	order_window.setup_values(0.1, 0.0, 0.0)
+	# 2. 填入智能计算的数值
+	order_window.setup_values(0.1, suggested_sl, suggested_tp)
 	
 	# 立即刷新一次价格
-	order_window.update_market_data(price, price) 
-	# 注意：真实交易里 bid 和 ask 有点差，这里模拟器暂且认为 bid=ask=close
+	order_window.update_market_data(price, price)
 
 # 接收窗口的下单请求
 func _on_order_window_submit(type: OrderData.Type, lots: float, sl: float, tp: float):
