@@ -106,12 +106,7 @@ func _setup_overlay():
 	_overlay.set_active(false)
 
 func _draw():
-	# [修改] 删除了 draw_rect - 背景现在由 GridLayer 负责
-	# 现在的绘制逻辑是：
-	# 1. GridLayer._draw (画背景 + 网格) -> 因为 show_behind_parent
-	# 2. KLineChart._draw (画蜡烛)      -> 因为这是父节点
-	
-	# [新增] 触发网格的一起重绘
+	# 触发网格的一起重绘
 	if _grid_layer: _grid_layer.queue_redraw()
 	
 	if _all_candles.is_empty():
@@ -120,16 +115,31 @@ func _draw():
 	var chart_width = size.x
 	var candle_full_width = candle_width + spacing
 	_visible_count = ceili(chart_width / candle_full_width)
+	
 	var start_index = max(0, _end_index - _visible_count)
-	var count = _end_index - start_index
+	
+	# [核心修复] 必须 +1 才能包含 _end_index 本身 (也就是正在活动的这根 K 线)
+	var count = _end_index - start_index + 1
+	
 	if count <= 0: return
 
 	_calculate_price_bounds(start_index, _end_index)
 
 	for i in range(count):
 		var data_idx = start_index + i
+		
+		# [安全防御] 防止索引越界
+		if data_idx < 0 or data_idx >= _all_candles.size():
+			continue
+			
 		var candle = _all_candles[data_idx]
+		
+		# 计算屏幕 X 坐标：相对于 start_index 的偏移
+		# 这里的 i 就是相对偏移量
 		var x_pos = i * candle_full_width
+		
+		# 如果你想让最新的 K 线靠右侧对齐，可以在这里做调整，
+		# 但目前逻辑是靠左填充视口，只要 _visible_count 够大，就能铺满屏幕。
 		
 		var y_open = _map_price_to_y(candle.o)
 		var y_close = _map_price_to_y(candle.c)
@@ -144,16 +154,14 @@ func _draw():
 		
 		var rect_top = min(y_open, y_close)
 		var rect_height = abs(y_close - y_open)
+		# 哪怕开盘价=收盘价，也画 1像素的高度，保证能看到横线
 		if rect_height < 1.0: rect_height = 1.0 
+		
 		draw_rect(Rect2(x_pos, rect_top, candle_width, rect_height), color)
 	
-	# 每次 Chart 重绘时(比如拖拽、缩放、新K线)，通知 OrderLayer 也跟着对齐重绘
-	if _order_layer:
-		_order_layer.queue_redraw()
-	
-	# 通知指标层重绘
-	if _indicator_layer:
-		_indicator_layer.queue_redraw()
+	# 每次 Chart 重绘时，通知子图层
+	if _order_layer: _order_layer.queue_redraw()
+	if _indicator_layer: _indicator_layer.queue_redraw()
 
 func _gui_input(event):
 	# 1. 鼠标按键事件

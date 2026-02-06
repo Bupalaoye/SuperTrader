@@ -322,20 +322,20 @@ func _on_timer_tick():
 		print("回放结束")
 		return
 	
-	# 暂停主 Timer，避免 Tick 动画还没播完，下一根 K 线就来了
+	# 1. 暂停定时器！！绝对不能让定时器打断我们的 await 表演
 	playback_timer.stop()
 	
-	# 获取这一根完整的数据
 	var target_candle = full_history_data[current_playback_index]
 	
-	# 执行 Tick 模拟协程
+	# 2. 等待表演结束 (这会花好几秒)
 	await _simulate_candle_ticks(target_candle)
 	
 	current_playback_index += 1
 	
-	# 动画播完，如果还是播放状态，恢复计时器开始下一轮
+	# 3. 表演完了，再开启定时器准备下一根
 	if is_playing:
-		playback_timer.start()
+		# 这里可以设置 wait_time 为 0.1，因为所有的延迟都在 simulate 内部控制了
+		playback_timer.start(0.1)
 
 # --- 账户回调 (UI 更新) ---
 
@@ -363,141 +363,125 @@ func _play_trade_sound():
 		# 如果没有音频文件，打印日志代替
 		print(">> [SOUND] Cash Register/Close Sound <<")
 
-# [核心重写] 模拟真实的 K 线生长过程
+#  带详细 Log 的慢速 K 线生成器
 func _simulate_candle_ticks(final_data: Dictionary):
+	print("\n========== 开始模拟新 K 线 ==========")
+	print("目标: Time=%s | Open=%.5f | High=%.5f | Low=%.5f | Close=%.5f" % [final_data.t, final_data.o, final_data.h, final_data.l, final_data.c])
+	
 	var t_str = final_data.t
 	var o = final_data.o
-	var h_target = final_data.h
-	var l_target = final_data.l
-	var c_target = final_data.c
 	
-	# 1. 出生阶段：K线刚出来时，是一条横线，O=H=L=C
+	# 1. 胚胎状态：初始 K 线只是一条横线
 	var current_sim_candle = {
 		"t": t_str,
 		"o": o,
-		"h": o, # 注意：最高价初始为开盘价
-		"l": o, # 注意：最低价初始为开盘价
+		"h": o, # 刚开盘 High = Open
+		"l": o, # 刚开盘 Low = Open
 		"c": o  
 	}
 	
-	# 立即推送“初始胚胎”，让用户看到新K线诞生
+	# 先画第一笔，确保屏幕上出现 Dash
 	_process_tick(current_sim_candle, o, 60)
 	
-	# 2. 规划路径：生成一系列微观价格点 (Ticks)
-	# 这是核心：路径必须保证经过 High 和 Low，最后落在 Close
-	var ticks = _generate_tick_path(o, h_target, l_target, c_target)
+	# 2. 生成剧本
+	var ticks = _generate_tick_path(o, final_data.h, final_data.l, final_data.c)
+	var total_steps = ticks.size()
 	
-	# 3. 演化循环 (Evolution Loop)
-	var total_ticks = ticks.size()
-	
-	for i in range(total_ticks):
-		# 如果用户点了暂停或停止，终止循环
-		if not is_playing: 
+	# 3. 开始表演 (Tick 循环)
+	for i in range(total_steps):
+		# 安全检查：用户点停止了吗？
+		if not is_playing:
+			print("[DEBUG] 用户中止播放")
 			return
-		
-		var tick_price = ticks[i]
-		
-		# --- [注入灵魂的关键逻辑] ---
-		# 随着 Tick 价格的变化，动态推高 H 或 踩低 L
-		# 这就是“K线是长出来的”视觉原理
-		current_sim_candle.c = tick_price
-		if tick_price > current_sim_candle.h:
-			current_sim_candle.h = tick_price
-		if tick_price < current_sim_candle.l:
-			current_sim_candle.l = tick_price
 			
-		# 计算倒计时 (模拟 1 分钟内的 60 秒倒数)
-		var progress = float(i) / float(total_ticks)
-		var seconds_left = int(60.0 * (1.0 - progress))
+		var price = ticks[i]
 		
-		# 推送更新 (刷新图表、现价线、账户盈亏)
-		_process_tick(current_sim_candle, tick_price, seconds_left)
+		# --- 核心生长逻辑 ---
+		current_sim_candle.c = price
+		# 如果价格冲高，把 High 顶上去
+		if price > current_sim_candle.h: 
+			current_sim_candle.h = price
+		# 如果价格杀跌，把 Low 踩下去
+		if price < current_sim_candle.l: 
+			current_sim_candle.l = price
+			
+		# 计算倒计时 (假装这是 1 分钟 K 线)
+		var progress = float(i) / float(total_steps)
+		var secs_left = int(60 * (1.0 - progress))
 		
-		# --- [节奏控制] ---
-		# 模拟市场的快慢节奏：有时候快，有时候慢
-		# 比如：大幅波动时快一点，盘整时慢一点
-		var dynamic_delay = randf_range(0.02, 0.08) # 平均 0.05秒一跳
-		await get_tree().create_timer(dynamic_delay).timeout
+		# --- 更新 UI ---
+		# 如果你想不想看海量日志，可以注释掉下面这一行
+		# print("Tick [%d/%d] Price: %.5f | H: %.5f | L: %.5f" % [i, total_steps, price, current_sim_candle.h, current_sim_candle.l])
+		
+		_process_tick(current_sim_candle, price, secs_left)
+		
+		# --- [关键] 强制等待 ---
+		# 这里我是故意写死 0.05 秒，也就是每秒 20 添加。
+		# 假设有 100 个 tick，这根线会画 5 秒钟！这绝对不可能是瞬间！
+		await get_tree().create_timer(0.05).timeout
 
-	# 4. 定格阶段：强制对齐最终数据
-	# 模拟结束，必须确保最终的 H/L/C 与历史数据完全一致
-	# 这一步消除了插值和噪声带来的微小误差
-	_process_tick(final_data, c_target, 0)
+	# 4. 完美收官
+	print("========== K 线模拟结束，定格数据 ==========")
+	_process_tick(final_data, final_data.c, 0)
 	_cached_last_candle = final_data
-
-# [新增] 生成包含 High 和 Low 的随机路径
+# [修复版] 强制生成高密度的路径点
 func _generate_tick_path(o: float, h: float, l: float, c: float) -> Array[float]:
 	var path_points = []
 	
-	# --- A. 确定关键锚点 (Anchors) ---
-	# 逻辑：价格必须从 O 出发，经过 H 和 L，最后到达 C。
-	# 问题是先去 H 还是先去 L？
-	# 我们根据形态做一个概率判断，或者完全随机。
-	
+	# 1. 定义骨架 (Anchor Points)
+	# 逻辑：从 Open 出发 -> 随机先去 High 还是 Low -> 最后到 Close
 	var anchors = [o]
 	
-	# 简单的策略：
-	# 1. 阳线 (Close > Open)：通常先探底(L)，再冲高(H)，再回落(C)
-	# 2. 阴线 (Close < Open)：通常先冲高(H)，再探底(L)，再反弹(C)
-	# 当然，为了真实，我们偶尔打乱顺序
-	
-	var is_bull = c >= o
-	var go_low_first = is_bull # 默认逻辑
-	
-	# 20% 的概率走“反常”路线 (比如阳线先冲高再回落再拉升)
-	if randf() < 0.2:
-		go_low_first = !go_low_first
-	
-	if go_low_first:
-		# 路径: O -> L -> H -> C
-		anchors.append(lerp(o, l, 0.5)) # 中途停顿
-		anchors.append(l)               # 踩到最低
-		anchors.append(lerp(l, h, 0.4)) # 反弹
-		anchors.append(h)               # 冲到最高
+	# 50% 概率先去最高，50% 先去最低，增加随机感
+	if randf() > 0.5:
+		# 路径: Open -> High -> Low -> Close
+		anchors.append(lerp(o, h, 0.5)) # 中途点
+		anchors.append(h)
+		anchors.append(lerp(h, l, 0.5)) # 中途点
+		anchors.append(l)
 	else:
-		# 路径: O -> H -> L -> C
-		anchors.append(lerp(o, h, 0.5)) # 中途停顿
-		anchors.append(h)               # 冲到最高
-		anchors.append(lerp(h, l, 0.4)) # 下跌
-		anchors.append(l)               # 踩到最低
+		# 路径: Open -> Low -> High -> Close
+		anchors.append(lerp(o, l, 0.5)) 
+		anchors.append(l)
+		anchors.append(lerp(l, h, 0.5)) 
+		anchors.append(h)
 	
-	anchors.append(c) # 终点
+	anchors.append(c) # 最后必须回到 Close
 	
-	# --- B. 填充路径 (Interpolation & Noise) ---
-	# 将锚点之间填满微小的 Ticks
-	
+	# 2. 填充血肉 (Ticks)
 	var result_ticks: Array[float] = []
-	var ticks_per_segment = 20 # 每个锚点之间生成多少个微跳动
+	
+	# [关键修改] 强制每个区间生成至少 20 个点。
+	# 假如 anchors 有 5 个点，那么总共有 4 段 * 20 = 80 个 Tick
+	var points_per_segment = 20 
 	
 	for i in range(anchors.size() - 1):
 		var p_start = anchors[i]
 		var p_end = anchors[i+1]
 		
-		for step in range(ticks_per_segment):
-			var t = float(step) / float(ticks_per_segment)
+		for step in range(points_per_segment):
+			var t = float(step) / float(points_per_segment)
 			
-			# 1. 线性插值作为基准
+			# 线性插值
 			var base = lerp(p_start, p_end, t)
 			
-			# 2. 叠加柏林噪声 (制造自然波动)
-			_noise_offset += 1.0 # 快速滚动噪声
-			var noise_val = _noise.get_noise_1d(_noise_offset) * 0.5 # -0.5 ~ 0.5
+			# 叠加噪声 (让线条抖动)
+			_noise_offset += 1.32
+			var noise_val = _noise.get_noise_1d(_noise_offset * 50.0) 
 			
-			# 噪声幅度：基于当前段落的价差，价差越大波动越明显
-			var amplitude = abs(p_end - p_start) * 0.3
-			# 最小给一点波动，防止死水
-			if amplitude < 0.00005: amplitude = 0.00005 
+			# 动态振幅：价差越大抖动越厉害，但至少给一点抖动
+			var segment_diff = abs(p_end - p_start)
+			var shake_amp = max(segment_diff * 0.15, 0.00005) 
 			
-			var final_val = base + (noise_val * amplitude)
-			
+			var final_val = base + (noise_val * shake_amp)
 			result_ticks.append(final_val)
 			
-	# 补上最后一个点
+	# 补上终点，确保数据闭环
 	result_ticks.append(c)
 	
+	print("[DEBUG] 生成路径成功: 关键点 %d 个 -> 最终 Ticks %d 个" % [anchors.size(), result_ticks.size()])
 	return result_ticks
 
-	
 # [修改] 参数增加 seconds_left
 func _process_tick(candle_state: Dictionary, current_price: float, seconds_left: int):
 	# 1. 如果是这根 K 线的第一次(Time变了)，需要 append，否则是 update
