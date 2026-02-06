@@ -40,6 +40,9 @@ var close_dialog: CloseOrderDialog
 var order_window: OrderWindow
 var order_window_overlay: Control
 
+# [Stage 5 新增] HUD 显示
+var hud_display: MarketHUD
+
 # --- 噪声生成 (Perlin Noise) ---
 var _noise: FastNoiseLite
 var _noise_offset: float = 0.0 # 噪声的滚动偏移量
@@ -187,6 +190,12 @@ func _ready():
 	order_window.market_order_requested.connect(_on_order_window_submit)
 	order_window.window_closed.connect(func(): order_window_overlay.visible = false)
 
+	# [新增] 初始化 HUD
+	hud_display = MarketHUD.new()
+	add_child(hud_display)
+	# 定位到屏幕左上角
+	hud_display.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	hud_display.position = Vector2(20, 20) # 留点边距
 
 	print("系统就绪! 请加载 CSV 数据。")
 
@@ -532,3 +541,62 @@ func _process_tick(candle_state: Dictionary, current_price: float, seconds_left:
 	# 4. 刷新订单层
 	# 偶尔略过绘制以提升性能？不用，现在电脑快。
 	chart.update_visual_orders(account.get_active_orders(), account.get_history_orders())
+	
+	# [新增] 每一跳都分析一次市场结构
+	_analyze_market_structure()
+
+# [新增] 核心策略分析器
+func _analyze_market_structure():
+	if full_history_data.is_empty(): return
+	
+	# 这里的 current_playback_index 指向的是"下一根还未出现"的K线索引，
+	# 所以当前最新的是 index - 1 (如果正在播放中)
+	# 但由于我们的数据结构是先把所有数据放到 full_history，然后 mask...
+	# 最好的方式是直接拿 chart 里正在展示的数据。
+	
+	# 为了简单且高性能，我们直接复用 full_history_data 
+	# 并且通过 playback_index 截断。
+	
+	# 1. 准备实时数据窗口 (最近 200 根足矣)
+	var end_idx = current_playback_index
+	if end_idx < 200: return # 数据太少，不算
+	
+	# 提取 Close 价格数组
+	# 优化：不需要每次都重新遍历整个几万条历史，只取最近的
+	var lookback = 250 
+	var start_idx = max(0, end_idx - lookback)
+	var slice_data = [] # KLine Dict Array
+	var slice_closes = [] # Float Array for Math
+	
+	for i in range(start_idx, end_idx): # 注意：end_idx 是开区间，刚好包住 current
+		var candle = full_history_data[i]
+		slice_data.append(candle)
+		slice_closes.append(candle.c)
+		
+	# 2. 计算指标
+	# A. EMA 200
+	var ema200_arr = IndicatorCalculator.calculate_ema(slice_closes, 200)
+	var current_ema = ema200_arr.back() # 拿最后一个值
+	
+	# B. RSI 14
+	var rsi_arr = IndicatorCalculator.calculate_rsi(slice_closes, 14)
+	var current_rsi = rsi_arr.back()
+	
+	# C. ATR 14
+	# 注意 ATR 需要 High/Low/Close 结构，不能只传 closes
+	var atr_arr = IndicatorCalculator.calculate_atr(slice_data, 14)
+	var current_atr = atr_arr.back()
+	
+	# 3. 综合判断
+	var price = slice_closes.back()
+	var trend_state = "SIDEWAYS"
+	
+	if not is_nan(current_ema):
+		if price > current_ema:
+			trend_state = "BULLISH"
+		else:
+			trend_state = "BEARISH"
+			
+	# 4. 更新 HUD
+	if hud_display:
+		hud_display.update_status(trend_state, current_rsi, current_atr, price)
