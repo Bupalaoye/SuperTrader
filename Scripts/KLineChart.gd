@@ -1,7 +1,7 @@
 extends Control
 class_name KLineChart
 
-# --- 状态机定义 (第一阶段核心) ---
+# --- 状态机定义 ---
 enum Mode { 
 	NONE,       # 默认状态
 	DRAG_VIEW,  # 拖拽视图平移
@@ -19,7 +19,7 @@ enum Mode {
 @export var bg_color: Color = Color.hex(0x111111FF) 
 
 # --- 节点引用 ---
-var _overlay: CrosshairOverlay # 引用子节点
+var _overlay: CrosshairOverlay 
 
 # --- 数据存储 ---
 var _all_candles: Array = [] 
@@ -32,30 +32,24 @@ var _min_visible_price: float = 0.0
 var _price_range: float = 1.0
 
 # --- 交互状态 ---
-var _current_mode: Mode = Mode.NONE # 单源真理
-var _measure_start_pos: Vector2 = Vector2.ZERO   # 像素坐标 (用来画线起点)
-var _measure_start_data: Dictionary = {}         # 业务数据 (用来算价格差和Bar数)
+var _current_mode: Mode = Mode.NONE 
+var _measure_start_pos: Vector2 = Vector2.ZERO   
+var _measure_start_data: Dictionary = {}         
 var _drag_start_x: float = 0.0
 var _drag_start_index: int = 0
 var _zoom_speed: float = 1.0
 
 func _ready():
-	# 1. 初始化覆盖层 (架构分层)
 	_setup_overlay()
-	
-	# 2. 初始化数据
 	_generate_test_data()
 	_end_index = _all_candles.size() - 1
 
-# 动态创建 Overlay 节点，确保“分层”架构落地
 func _setup_overlay():
 	_overlay = CrosshairOverlay.new()
 	_overlay.name = "CrosshairOverlay"
-	# 让覆盖层撑满整个图表
-	_overlay.layout_mode = 1 # Anchors Preset: Full Rect
+	_overlay.layout_mode = 1 
 	_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(_overlay)
-	# 初始状态设为关闭
 	_overlay.set_active(false)
 
 func _draw():
@@ -64,7 +58,6 @@ func _draw():
 	if _all_candles.is_empty():
 		return
 
-	# [保留原有的绘制逻辑不变]
 	var chart_width = size.x
 	var candle_full_width = candle_width + spacing
 	_visible_count = ceili(chart_width / candle_full_width)
@@ -104,10 +97,18 @@ func _gui_input(event):
 			_toggle_crosshair_mode()
 			accept_event() 
 			return
+		
+		# --- D. (新功能) 右键：取消/退出十字光标模式 ---
+		if event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
+			# 只有在 十字模式 或 测量模式 下，右键才生效（作为取消键）
+			if _current_mode == Mode.CROSSHAIR or _current_mode == Mode.MEASURE:
+				_disable_crosshair_mode() # 强行退出
+				accept_event()
+			return
+
 		# --- B. 滚轮 (缩放) ---
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
 			_zoom_chart(1.1)
-			# 如果在十字模式下缩放，需要立即更新光标位置的数据
 			if _current_mode == Mode.CROSSHAIR: _push_data_to_overlay(get_local_mouse_position())
 			accept_event()
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
@@ -118,20 +119,16 @@ func _gui_input(event):
 		# --- C. 左键 (核心交互逻辑) ---
 		elif event.button_index == MOUSE_BUTTON_LEFT:
 			if event.pressed:
-				# 按下逻辑
 				match _current_mode:
 					Mode.NONE:
 						_start_drag(event.position.x)
 					Mode.CROSSHAIR:
-						# 在十字模式下按左键 -> 开始量尺
 						_start_measure(event.position)
 			else:
-				# 松开逻辑
 				match _current_mode:
 					Mode.DRAG_VIEW:
 						_stop_drag()
 					Mode.MEASURE:
-						# 松开量尺 -> 回到十字模式
 						_stop_measure()
 	# 2. 鼠标移动事件
 	if event is InputEventMouseMotion:
@@ -140,54 +137,37 @@ func _gui_input(event):
 				_process_drag(event.position.x)
 			
 			Mode.CROSSHAIR, Mode.MEASURE:
-				# 统一的数据推送逻辑
 				_push_data_to_overlay(event.position)
 
-# --- 数据打包与分发 (Protocol Implementation) ---
+# --- 核心逻辑 ---
+
 func _push_data_to_overlay(mouse_pos: Vector2):
 	if not _overlay: return
-	
-	# 1. 获取当前鼠标点的数据
 	var current_data = _get_data_at_mouse(mouse_pos)
 	
-	# 2. 构建基础 Payload
 	var payload = current_data.duplicate()
-	payload["current_pos"] = mouse_pos # 补充像素坐标
+	payload["current_pos"] = mouse_pos
 	
-	# 3. 如果是量尺模式，注入起始点数据
 	if _current_mode == Mode.MEASURE:
 		payload["is_measuring"] = true
 		payload["start_pos"] = _measure_start_pos
-		# 从缓存的起始数据中提取关键值
 		payload["start_price"] = _measure_start_data.get("price", 0.0)
 		payload["start_index"] = _measure_start_data.get("index", 0)
 	else:
 		payload["is_measuring"] = false
 	
-	# 4. 发送给 View 层
 	_overlay.update_crosshair(mouse_pos, payload)
 
-# 进入测量模式
 func _start_measure(pos: Vector2):
 	_current_mode = Mode.MEASURE
-	
-	# 记录“按下那一刻”的状态
 	_measure_start_pos = pos
 	_measure_start_data = _get_data_at_mouse(pos)
-	
-	# 立即刷新一次 UI
 	_push_data_to_overlay(pos)
-	# print("状态切换: MEASURE (Anchor: %.2f)" % _measure_start_data.price)
-# 结束测量模式
-func _stop_measure():
-	# 关键：松手后不回到 NONE，而是回到 CROSSHAIR，符合 MT4/TradingView 习惯
-	_current_mode = Mode.CROSSHAIR
-	
-	# 推送一次数据，把 is_measuring 标记为 false，让 Overlay 清除那根线
-	_push_data_to_overlay(get_local_mouse_position())
-	# print("状态切换: CROSSHAIR")
 
-# 把鼠标位置转换成具体的业务数据
+func _stop_measure():
+	_current_mode = Mode.CROSSHAIR
+	_push_data_to_overlay(get_local_mouse_position())
+
 func _get_data_at_mouse(mouse_pos: Vector2) -> Dictionary:
 	var result = {
 		"price": 0.0,
@@ -195,69 +175,56 @@ func _get_data_at_mouse(mouse_pos: Vector2) -> Dictionary:
 		"time_str": "",
 		"index": -1
 	}
-	
-	# 1. 计算 Y 轴对应的价格
 	result.price = _get_price_at_y(mouse_pos.y)
-	# 格式化价格 (这里假设是外汇 4位小数，你可以根据 symbol digits 动态调整)
 	result.price_str = "%.5f" % result.price
-	
-	# 2. 计算 X 轴对应的索引
 	var idx = _get_index_at_x(mouse_pos.x)
 	result.index = idx
-	
-	# 3. 获取时间
 	if idx >= 0 and idx < _all_candles.size():
-		var candle = _all_candles[idx]
-		# 假设你的数据里有 "t" (time) 字段
-		result.time_str = str(candle.get("t", "N/A"))
+		result.time_str = str(_all_candles[idx].get("t", "N/A"))
 	else:
 		result.time_str = ""
-		
 	return result
-# 像素 X -> K线索引 Index
+
 func _get_index_at_x(x: float) -> int:
 	var candle_full_width = candle_width + spacing
 	if candle_full_width <= 0: return 0
-	
-	# 计算屏幕可见的起始索引
-	# 注意：必须和 _draw 里的逻辑完全一致
 	var char_width = size.x
-	# 这里的 _visible_count 最好引用 _draw 计算后的值，或者重新算一遍
 	var vis_count = ceili(char_width / candle_full_width)
 	var start_index = max(0, _end_index - vis_count)
-	
-	# 当前鼠标在第几根（相对于屏幕左侧）
 	var relative_idx = int(x / candle_full_width)
-	
 	return start_index + relative_idx
-# 像素 Y -> 价格 Price
+
 func _get_price_at_y(y: float) -> float:
-	# 逆向推导 _map_price_to_y 公式
-	# 原公式: y = padding + (1.0 - ratio) * render_height
-	# ratio = (price - min) / range
-	
 	var padding = size.y * 0.05
 	var render_height = size.y * 0.9
-	
 	if render_height == 0: return 0.0
-	
 	var val = (y - padding) / render_height
 	var ratio = 1.0 - val
-	
 	return _min_visible_price + ratio * _price_range
-# --- 状态管理方法 ---
+
+# --- 状态管理方法更新 ---
 
 func _toggle_crosshair_mode():
+	# 如果已经在十字或测量模式，则关闭
 	if _current_mode == Mode.CROSSHAIR or _current_mode == Mode.MEASURE:
-		_current_mode = Mode.NONE
-		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-		if _overlay: _overlay.set_active(false)
+		_disable_crosshair_mode()
 	else:
-		_current_mode = Mode.CROSSHAIR
-		# Input.mouse_mode = Input.MOUSE_MODE_HIDDEN # 可选：隐藏系统鼠标
-		if _overlay: 
-			_overlay.set_active(true)
-			_push_data_to_overlay(get_local_mouse_position())
+		# 否则开启
+		_enable_crosshair_mode()
+
+# 拆分出独立的开启函数
+func _enable_crosshair_mode():
+	_current_mode = Mode.CROSSHAIR
+	# Input.mouse_mode = Input.MOUSE_MODE_HIDDEN # 如需隐藏系统光标可取消注释
+	if _overlay: 
+		_overlay.set_active(true)
+		_push_data_to_overlay(get_local_mouse_position())
+
+# 拆分出独立的关闭函数 (供中键Toggle和右键Cancel共同使用)
+func _disable_crosshair_mode():
+	_current_mode = Mode.NONE
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	if _overlay: _overlay.set_active(false)
 
 func _start_drag(mouse_x: float):
 	_current_mode = Mode.DRAG_VIEW
@@ -276,8 +243,6 @@ func _process_drag(mouse_x: float):
 	_clamp_view()
 	queue_redraw()
 
-
-# --- 辅助函数保持不变 ---
 func _map_price_to_y(price: float) -> float:
 	if _price_range == 0: return size.y / 2
 	var ratio = (price - _min_visible_price) / _price_range
