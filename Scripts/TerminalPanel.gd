@@ -20,6 +20,11 @@ func _ready():
 
 # --- 初始化表格结构 ---
 func _setup_trade_tree():
+	# [新增] 关键布局设置：强制表格填充父容器的高度
+	trade_tree.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	# [新增] 关键布局设置：允许水平缩放
+	trade_tree.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	
 	trade_tree.columns = TradeCol.MAX
 	trade_tree.set_column_title(TradeCol.TICKET, "Order")
 	trade_tree.set_column_title(TradeCol.TIME, "Time")
@@ -39,6 +44,10 @@ func _setup_trade_tree():
 		trade_tree.create_item()
 
 func _setup_history_tree():
+	# [新增] 同样的设置给历史记录表
+	history_tree.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	history_tree.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	
 	history_tree.columns = HistCol.MAX
 	history_tree.set_column_title(HistCol.TICKET, "Order")
 	history_tree.set_column_title(HistCol.TIME, "Time")

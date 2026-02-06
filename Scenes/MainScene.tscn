@@ -16,17 +16,28 @@ size_flags_horizontal = 3
 size_flags_vertical = 3
 script = ExtResource("1_tr2i4")
 
-[node name="KLineChart" type="Control" parent="." unique_id=951920011]
+[node name="FileDialog" type="FileDialog" parent="." unique_id=417778728]
 unique_name_in_owner = true
+oversampling_override = 1.0
+
+[node name="Timer" type="Timer" parent="." unique_id=1707268968]
+unique_name_in_owner = true
+
+[node name="VSplitContainer" type="VSplitContainer" parent="." unique_id=35907449]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+
+[node name="KLineChart" type="Control" parent="VSplitContainer" unique_id=951920011]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_vertical = 3
 script = ExtResource("1_hpc76")
 
-[node name="CrosshairOverlay" type="Control" parent="KLineChart" unique_id=1113313176]
+[node name="CrosshairOverlay" type="Control" parent="VSplitContainer/KLineChart" unique_id=1113313176]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -36,12 +47,48 @@ grow_vertical = 2
 mouse_filter = 2
 script = ExtResource("3_nhkr4")
 
-[node name="FileDialog" type="FileDialog" parent="." unique_id=417778728]
+[node name="TerminalPanel" type="PanelContainer" parent="VSplitContainer" unique_id=1525639473]
 unique_name_in_owner = true
-oversampling_override = 1.0
+custom_minimum_size = Vector2(0, 100)
+layout_mode = 2
+size_flags_vertical = 3
+script = ExtResource("4_7rqgy")
 
-[node name="Timer" type="Timer" parent="." unique_id=1707268968]
+[node name="TabContainer" type="TabContainer" parent="VSplitContainer/TerminalPanel" unique_id=2009219990]
+layout_mode = 2
+current_tab = 1
+
+[node name="Trade" type="VBoxContainer" parent="VSplitContainer/TerminalPanel/TabContainer" unique_id=1753099054]
+visible = false
+layout_mode = 2
+metadata/_tab_index = 0
+
+[node name="TradeTree" type="Tree" parent="VSplitContainer/TerminalPanel/TabContainer/Trade" unique_id=1559597924]
 unique_name_in_owner = true
+layout_mode = 2
+size_flags_vertical = 3
+column_titles_visible = true
+hide_root = true
+
+[node name="History" type="VBoxContainer" parent="VSplitContainer/TerminalPanel/TabContainer" unique_id=1309065954]
+layout_mode = 2
+metadata/_tab_index = 1
+
+[node name="HistoryTree" type="Tree" parent="VSplitContainer/TerminalPanel/TabContainer/History" unique_id=228685030]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_vertical = 3
+column_titles_visible = true
+hide_root = true
+
+[node name="Journal" type="VBoxContainer" parent="VSplitContainer/TerminalPanel/TabContainer" unique_id=1335907042]
+visible = false
+layout_mode = 2
+metadata/_tab_index = 2
+
+[node name="JournalLog" type="RichTextLabel" parent="VSplitContainer/TerminalPanel/TabContainer/Journal" unique_id=199804253]
+unique_name_in_owner = true
+layout_mode = 2
 
 [node name="UI_Canvas" type="Control" parent="." unique_id=1105325018]
 layout_mode = 1
@@ -130,50 +177,3 @@ text = "SELL"
 unique_name_in_owner = true
 layout_mode = 2
 text = "Close All"
-
-[node name="TerminalPanel" type="PanelContainer" parent="UI_Canvas" unique_id=1525639473]
-unique_name_in_owner = true
-layout_mode = 1
-anchors_preset = 12
-anchor_top = 1.0
-anchor_right = 1.0
-anchor_bottom = 1.0
-grow_horizontal = 2
-grow_vertical = 0
-script = ExtResource("4_7rqgy")
-
-[node name="TabContainer" type="TabContainer" parent="UI_Canvas/TerminalPanel" unique_id=2009219990]
-layout_mode = 2
-current_tab = 1
-
-[node name="Trade" type="VBoxContainer" parent="UI_Canvas/TerminalPanel/TabContainer" unique_id=1753099054]
-visible = false
-layout_mode = 2
-metadata/_tab_index = 0
-
-[node name="TradeTree" type="Tree" parent="UI_Canvas/TerminalPanel/TabContainer/Trade" unique_id=1559597924]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_vertical = 3
-column_titles_visible = true
-hide_root = true
-
-[node name="History" type="VBoxContainer" parent="UI_Canvas/TerminalPanel/TabContainer" unique_id=1309065954]
-layout_mode = 2
-metadata/_tab_index = 1
-
-[node name="HistoryTree" type="Tree" parent="UI_Canvas/TerminalPanel/TabContainer/History" unique_id=228685030]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_vertical = 3
-column_titles_visible = true
-hide_root = true
-
-[node name="Journal" type="VBoxContainer" parent="UI_Canvas/TerminalPanel/TabContainer" unique_id=1335907042]
-visible = false
-layout_mode = 2
-metadata/_tab_index = 2
-
-[node name="JournalLog" type="RichTextLabel" parent="UI_Canvas/TerminalPanel/TabContainer/Journal" unique_id=199804253]
-unique_name_in_owner = true
-layout_mode = 2
