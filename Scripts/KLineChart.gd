@@ -510,7 +510,8 @@ func calculate_and_add_ma(period: int, color: Color):
 	
 	# 3. 添加到图层
 	if _indicator_layer:
-		_indicator_layer.add_indicator(ma_data, color, 1.5)
+		# [修复] 改为调用具体的 add_line_indicator
+		_indicator_layer.add_line_indicator(ma_data, color, 1.5)
 
 # [新增] 图层需要的辅助查询接口
 func get_first_visible_index() -> int:
