@@ -125,49 +125,98 @@ func _gui_input(event):
 						_stop_drag()
 					Mode.MEASURE:
 						_stop_measure()
-
 	# 2. 鼠标移动事件
-	elif event is InputEventMouseMotion:
-		# 移动事件太频繁，不要一直 print，只在特定模式下 print
-		if _current_mode == Mode.CROSSHAIR:
-			# print("鼠标移动中... 通知 Overlay 更新") # 如果觉得太卡，这行可以注释
-			if _overlay:
-				_overlay.update_crosshair(event.position)
-				
-		elif _current_mode == Mode.DRAG_VIEW:
-			_process_drag(event.position.x)
-	# 2. 鼠标移动事件
-	elif event is InputEventMouseMotion:
+	if event is InputEventMouseMotion:
 		match _current_mode:
 			Mode.DRAG_VIEW:
 				_process_drag(event.position.x)
 			
 			Mode.CROSSHAIR, Mode.MEASURE:
-				# 十字模式下，直接通知子节点更新位置
-				# 注意：这里没有调用 KLineChart 的 queue_redraw()，性能极大提升
-				if _overlay:
-					_overlay.update_crosshair(event.position)
+				# --- Phase 2 新增逻辑: 像素转数据 ---
+				var data = _get_data_at_mouse(event.position)
 				
-				# 如果是量尺模式，以后这里还要更新量尺终点数据
+				# 通知 Overlay 更新，不仅传位置，还传价格和时间
+				if _overlay:
+					_overlay.update_crosshair(event.position, data)
 
+# 把鼠标位置转换成具体的业务数据
+func _get_data_at_mouse(mouse_pos: Vector2) -> Dictionary:
+	var result = {
+		"price": 0.0,
+		"price_str": "",
+		"time_str": "",
+		"index": -1
+	}
+	
+	# 1. 计算 Y 轴对应的价格
+	result.price = _get_price_at_y(mouse_pos.y)
+	# 格式化价格 (这里假设是外汇 4位小数，你可以根据 symbol digits 动态调整)
+	result.price_str = "%.5f" % result.price
+	
+	# 2. 计算 X 轴对应的索引
+	var idx = _get_index_at_x(mouse_pos.x)
+	result.index = idx
+	
+	# 3. 获取时间
+	if idx >= 0 and idx < _all_candles.size():
+		var candle = _all_candles[idx]
+		# 假设你的数据里有 "t" (time) 字段
+		result.time_str = str(candle.get("t", "N/A"))
+	else:
+		result.time_str = ""
+		
+	return result
+# 像素 X -> K线索引 Index
+func _get_index_at_x(x: float) -> int:
+	var candle_full_width = candle_width + spacing
+	if candle_full_width <= 0: return 0
+	
+	# 计算屏幕可见的起始索引
+	# 注意：必须和 _draw 里的逻辑完全一致
+	var char_width = size.x
+	# 这里的 _visible_count 最好引用 _draw 计算后的值，或者重新算一遍
+	var vis_count = ceili(char_width / candle_full_width)
+	var start_index = max(0, _end_index - vis_count)
+	
+	# 当前鼠标在第几根（相对于屏幕左侧）
+	var relative_idx = int(x / candle_full_width)
+	
+	return start_index + relative_idx
+# 像素 Y -> 价格 Price
+func _get_price_at_y(y: float) -> float:
+	# 逆向推导 _map_price_to_y 公式
+	# 原公式: y = padding + (1.0 - ratio) * render_height
+	# ratio = (price - min) / range
+	
+	var padding = size.y * 0.05
+	var render_height = size.y * 0.9
+	
+	if render_height == 0: return 0.0
+	
+	var val = (y - padding) / render_height
+	var ratio = 1.0 - val
+	
+	return _min_visible_price + ratio * _price_range
 # --- 状态管理方法 ---
 
 func _toggle_crosshair_mode():
 	if _current_mode == Mode.CROSSHAIR or _current_mode == Mode.MEASURE:
 		# 退出十字模式，回到普通模式
 		_current_mode = Mode.NONE
-		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE # 显示系统鼠标
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		if _overlay: _overlay.set_active(false)
 	else:
 		# 进入十字模式
 		_current_mode = Mode.CROSSHAIR
-		# 仿MT4：通常十字模式下系统鼠标最好保留，或者隐藏换成自定义样式的
-		# 为了测试方便，暂时不隐藏系统鼠标，如果想隐藏这一行取消注释：
+		
 		# Input.mouse_mode = Input.MOUSE_MODE_HIDDEN 
 		if _overlay: 
 			_overlay.set_active(true)
-			# 立即更新一次位置，防止光标闪现到 (0,0)
-			_overlay.update_crosshair(get_local_mouse_position())
+			
+			# 因为 update_crosshair 现在需要两个参数，所以初始化时也要计算一下数据
+			var mouse_pos = get_local_mouse_position()
+			var data = _get_data_at_mouse(mouse_pos)
+			_overlay.update_crosshair(mouse_pos, data)
 
 func _start_drag(mouse_x: float):
 	_current_mode = Mode.DRAG_VIEW
