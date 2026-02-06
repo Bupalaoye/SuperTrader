@@ -133,7 +133,7 @@ def merge_cs_files(source_folder, output_file):
 if __name__ == "__main__":
     # --- 用户配置 ---
     source_directory = (
-        r"C:/Users/Dola/Documents/UnityProj/super-trader/Scripts/"
+        r"C:\Users\Dola\Documents\UnityProj\SuperTrader\Scripts"
     )
 
     merged_filename = "project_report.txt"

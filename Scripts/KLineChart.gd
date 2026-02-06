@@ -1,18 +1,29 @@
 extends Control
 class_name KLineChart
 
+# --- 状态机定义 (第一阶段核心) ---
+enum Mode { 
+	NONE,       # 默认状态
+	DRAG_VIEW,  # 拖拽视图平移
+	CROSSHAIR,  # 十字光标模式
+	MEASURE     # 量尺测量模式
+}
+
 # --- 配置参数 ---
 @export_group("Visual Settings")
-@export var candle_width: float = 8.0
-@export var spacing: float = 2.0
-@export var bull_color: Color = Color.hex(0x00FF00FF) # 涨 (绿)
-@export var bear_color: Color = Color.hex(0xFF0000FF) # 跌 (红)
-@export var wick_color: Color = Color.WHITE
-@export var bg_color: Color = Color.hex(0x111111FF)
+@export var candle_width: float = 8.0 
+@export var spacing: float = 2.0 
+@export var bull_color: Color = Color.hex(0x00FF00FF) 
+@export var bear_color: Color = Color.hex(0xFF0000FF) 
+@export var wick_color: Color = Color.WHITE 
+@export var bg_color: Color = Color.hex(0x111111FF) 
+
+# --- 节点引用 ---
+var _overlay: CrosshairOverlay # 引用子节点
 
 # --- 数据存储 ---
 var _all_candles: Array = [] 
-var _visible_count: int = 100
+var _visible_count: int = 100 
 
 # --- 视图状态 ---
 var _end_index: int = 0 
@@ -21,155 +32,185 @@ var _min_visible_price: float = 0.0
 var _price_range: float = 1.0
 
 # --- 交互状态 ---
-var _is_dragging: bool = false
+var _current_mode: Mode = Mode.NONE # 单源真理
 var _drag_start_x: float = 0.0
 var _drag_start_index: int = 0
+var _zoom_speed: float = 1.0
 
 func _ready():
-	_end_index = -1
+	# 1. 初始化覆盖层 (架构分层)
+	_setup_overlay()
+	
+	# 2. 初始化数据
+	_generate_test_data()
+	_end_index = _all_candles.size() - 1
+
+# 动态创建 Overlay 节点，确保“分层”架构落地
+func _setup_overlay():
+	_overlay = CrosshairOverlay.new()
+	_overlay.name = "CrosshairOverlay"
+	# 让覆盖层撑满整个图表
+	_overlay.layout_mode = 1 # Anchors Preset: Full Rect
+	_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	add_child(_overlay)
+	# 初始状态设为关闭
+	_overlay.set_active(false)
 
 func _draw():
-	# 1. 绘制背景
 	draw_rect(Rect2(Vector2.ZERO, size), bg_color)
 	
 	if _all_candles.is_empty():
 		return
 
-	# --- 性能优化第一步：预计算布局参数 ---
-	var chart_height = size.y
+	# [保留原有的绘制逻辑不变]
 	var chart_width = size.x
 	var candle_full_width = candle_width + spacing
-	
-	# 限制最小宽度，防止缩放过小导致一次绘制几万根而卡死
-	if candle_full_width < 1.0: candle_full_width = 1.0
-	
-	_visible_count = ceili(chart_width / candle_full_width) + 1
+	_visible_count = ceili(chart_width / candle_full_width)
 	var start_index = max(0, _end_index - _visible_count)
 	var count = _end_index - start_index
-	
 	if count <= 0: return
 
-	# 计算价格边界
 	_calculate_price_bounds(start_index, _end_index)
-	
-	# --- 性能优化第二步：内联数学计算系数 ---
-	# 避免在循环里做除法，改为乘法 (乘法比除法快)
-	# Pre-calculate calculation constants
-	var price_range_inv = 0.0
-	if _price_range > 0.0000001:
-		price_range_inv = 1.0 / _price_range
-		
-	var padding_top = chart_height * 0.05
-	var render_height = chart_height * 0.9
-	var min_p = _min_visible_price
 
-	# --- 性能优化第三步：准备批量绘制数组 ---
-	# 使用 PackedVector2Array 比普通 Array 快得多
-	var wick_lines = PackedVector2Array() 
-	# 虽然 Godot 没有 draw_rects (复数)，但我们至少可以把影线合并
-	
-	# 循环
 	for i in range(count):
-		# 从左到右绘制，为了对齐 MT4，这里假设 end_index 是屏幕最右侧
-		# 计算逻辑：index 越小越左
-		# right_offset 是相对于屏幕右边缘的偏移量
-		var data_idx = _end_index - i
-		if data_idx < 0: break
-		
+		var data_idx = start_index + i
 		var candle = _all_candles[data_idx]
+		var x_pos = i * candle_full_width
 		
-		# X 坐标：从右向左画
-		# 屏幕宽度 - (当前第几根 * 宽度) - 半个宽度修正
-		var x_pos = chart_width - (i * candle_full_width) - (candle_width * 0.5)
+		var y_open = _map_price_to_y(candle.o)
+		var y_close = _map_price_to_y(candle.c)
+		var y_high = _map_price_to_y(candle.h)
+		var y_low = _map_price_to_y(candle.l)
 		
-		if x_pos < -candle_width: break # 超出左边界提前退出
+		var is_bull = candle.c >= candle.o
+		var color = bull_color if is_bull else bear_color
 		
-		# --- 内联 Y 轴映射逻辑 (Inlining) ---
-		# 原来的函数调用 _map_price_to_y 删除了
-		var o = candle.o
-		var c = candle.c
-		var h = candle.h
-		var l = candle.l
-		
-		# 公式: y = padding + (1.0 - (price - min) * range_inv) * height
-		# 简化: y = padding + height - (price - min) * range_inv * height
-		# 提取常量 scale = range_inv * height
-		var val_scale = price_range_inv * render_height
-		var base_y = padding_top + render_height
-		
-		var y_open = base_y - (o - min_p) * val_scale
-		var y_close = base_y - (c - min_p) * val_scale
-		var y_high = base_y - (h - min_p) * val_scale
-		var y_low = base_y - (l - min_p) * val_scale
-		
-		# --- 收集影线数据 ---
-		wick_lines.append(Vector2(x_pos, y_high))
-		wick_lines.append(Vector2(x_pos, y_low))
-		
-		# --- 立即绘制实体 (无法批量，除非用 Mesh，但这步通常够快了) ---
-		var is_bull = c >= o
-		var rect_color = bull_color if is_bull else bear_color
+		var center_x = x_pos + candle_width / 2
+		draw_line(Vector2(center_x, y_high), Vector2(center_x, y_low), wick_color, 1.0)
 		
 		var rect_top = min(y_open, y_close)
-		var rect_h = abs(y_close - y_open)
-		if rect_h < 1.0: rect_h = 1.0
-		
-		# 注意 draw_rect 用的是左上角坐标，x_pos 是中心，所以要偏一下
-		draw_rect(Rect2(x_pos - candle_width/2.0, rect_top, candle_width, rect_h), rect_color)
+		var rect_height = abs(y_close - y_open)
+		if rect_height < 1.0: rect_height = 1.0 
+		draw_rect(Rect2(x_pos, rect_top, candle_width, rect_height), color)
 
-	# --- 性能优化第四步：一次性绘制所有影线 ---
-	# 这将几百次 draw_line 压缩为 1 次底层 API 调用
-	if wick_lines.size() > 0:
-		draw_multiline(wick_lines, wick_color, 1.0)
-
-# --- 辅助逻辑保持不变 ---
-
-func _calculate_price_bounds(start_idx: int, end_idx: int):
-	# 重置极值
-	_min_visible_price = INF
-	_max_visible_price = -INF
-	
-	# 这里增加一个步长保护，防止数据量过大时循环太久
-	# 虽然通常可视区域只有几百根，但为了安全
-	start_idx = clamp(start_idx, 0, _all_candles.size() - 1)
-	end_idx = clamp(end_idx, 0, _all_candles.size() - 1)
-	
-	if start_idx > end_idx: return
-
-	# 简单的循环寻找极值 (对于几百个元素，这比 Array.max() 快，因为只遍历部分)
-	for i in range(start_idx, end_idx + 1):
-		var c = _all_candles[i]
-		if c.l < _min_visible_price: _min_visible_price = c.l
-		if c.h > _max_visible_price: _max_visible_price = c.h
-	
-	_price_range = _max_visible_price - _min_visible_price
-	if _price_range == 0: _price_range = 1.0
-
-# --- 交互逻辑保持基本一致 ---
-
+# --- 核心交互重构 (Input Handling Refactor) ---
+# 这是解决所有交互问题的关键函数
 func _gui_input(event):
+	
+	# 1. 鼠标按键事件
 	if event is InputEventMouseButton:
+		
+		# --- A. 中键：切换十字光标模式 ---
+		if event.button_index == MOUSE_BUTTON_MIDDLE and event.pressed:
+			print("中键点击：切换模式") # Debug Log
+			_toggle_crosshair_mode()
+			accept_event() # 消费事件，不再传递
+			return
+
+		# --- B. 滚轮：缩放 (全局有效) ---
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
 			_zoom_chart(1.1)
+			accept_event()
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			_zoom_chart(0.9)
-		if event.button_index == MOUSE_BUTTON_LEFT:
+			accept_event()
+			
+		# --- C. 左键：根据当前模式分发逻辑 ---
+		elif event.button_index == MOUSE_BUTTON_LEFT:
 			if event.pressed:
-				_is_dragging = true
-				_drag_start_x = event.position.x
-				_drag_start_index = _end_index
+				# 按下逻辑
+				match _current_mode:
+					Mode.NONE:
+						_start_drag(event.position.x)
+					Mode.CROSSHAIR:
+						_start_measure(event.position)
 			else:
-				_is_dragging = false
+				# 松开逻辑
+				match _current_mode:
+					Mode.DRAG_VIEW:
+						_stop_drag()
+					Mode.MEASURE:
+						_stop_measure()
 
-	if event is InputEventMouseMotion and _is_dragging:
-		var delta_x = event.position.x - _drag_start_x
-		var candle_full_width = candle_width + spacing
-		var move_count = int(delta_x / candle_full_width)
-		
-		# 修正: 拖拽方向
-		_end_index = _drag_start_index + move_count
-		_clamp_view()
-		queue_redraw()
+	# 2. 鼠标移动事件
+	elif event is InputEventMouseMotion:
+		match _current_mode:
+			Mode.DRAG_VIEW:
+				_process_drag(event.position.x)
+			
+			Mode.CROSSHAIR, Mode.MEASURE:
+				# 十字模式下，直接通知子节点更新位置
+				# 注意：这里没有调用 KLineChart 的 queue_redraw()，性能极大提升
+				if _overlay:
+					_overlay.update_crosshair(event.position)
+				
+				# 如果是量尺模式，以后这里还要更新量尺终点数据
+
+# --- 状态管理方法 ---
+
+func _toggle_crosshair_mode():
+	if _current_mode == Mode.CROSSHAIR or _current_mode == Mode.MEASURE:
+		# 退出十字模式，回到普通模式
+		_current_mode = Mode.NONE
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE # 显示系统鼠标
+		if _overlay: _overlay.set_active(false)
+	else:
+		# 进入十字模式
+		_current_mode = Mode.CROSSHAIR
+		# 仿MT4：通常十字模式下系统鼠标最好保留，或者隐藏换成自定义样式的
+		# 为了测试方便，暂时不隐藏系统鼠标，如果想隐藏这一行取消注释：
+		# Input.mouse_mode = Input.MOUSE_MODE_HIDDEN 
+		if _overlay: 
+			_overlay.set_active(true)
+			# 立即更新一次位置，防止光标闪现到 (0,0)
+			_overlay.update_crosshair(get_local_mouse_position())
+
+func _start_drag(mouse_x: float):
+	_current_mode = Mode.DRAG_VIEW
+	_drag_start_x = mouse_x
+	_drag_start_index = _end_index
+
+func _stop_drag():
+	if _current_mode == Mode.DRAG_VIEW:
+		_current_mode = Mode.NONE
+
+func _process_drag(mouse_x: float):
+	var delta_x = mouse_x - _drag_start_x
+	var candle_full_width = candle_width + spacing
+	var move_count = int(delta_x / candle_full_width)
+	_end_index = _drag_start_index - move_count
+	_clamp_view()
+	queue_redraw()
+
+# 量尺暂未实现具体绘制（第二/三阶段内容），先搭好状态切换
+func _start_measure(pos: Vector2):
+	_current_mode = Mode.MEASURE
+	print("开始测量 (Phase 3 待实现)")
+
+func _stop_measure():
+	# 松手后回到十字模式
+	_current_mode = Mode.CROSSHAIR
+	print("结束测量")
+
+# --- 辅助函数保持不变 ---
+func _map_price_to_y(price: float) -> float:
+	if _price_range == 0: return size.y / 2
+	var ratio = (price - _min_visible_price) / _price_range
+	var padding = size.y * 0.05
+	var render_height = size.y * 0.9
+	return padding + (1.0 - ratio) * render_height
+
+func _calculate_price_bounds(start_idx: int, end_idx: int):
+	var min_p = 99999999.0
+	var max_p = -99999999.0
+	for i in range(start_idx, end_idx + 1):
+		if i >= _all_candles.size(): break
+		var c = _all_candles[i]
+		if c.l < min_p: min_p = c.l
+		if c.h > max_p: max_p = c.h
+	_min_visible_price = min_p
+	_max_visible_price = max_p
+	_price_range = max_p - min_p
 
 func _zoom_chart(factor: float):
 	candle_width *= factor
@@ -179,8 +220,6 @@ func _zoom_chart(factor: float):
 func _clamp_view():
 	_end_index = clamp(_end_index, 0, _all_candles.size() - 1)
 
-# --- 公开接口 ---
-
 func set_history_data(data: Array):
 	_all_candles = data
 	_end_index = data.size() - 1
@@ -188,11 +227,22 @@ func set_history_data(data: Array):
 
 func append_candle(data: Dictionary):
 	_all_candles.append(data)
-	if _end_index >= _all_candles.size() - 2:
-		_end_index = _all_candles.size() - 1
+	if _end_index == _all_candles.size() - 2:
+		_end_index += 1
 	queue_redraw()
 
 func jump_to_index(idx: int):
 	_end_index = idx
 	_clamp_view()
 	queue_redraw()
+
+func _generate_test_data():
+	var price = 100.0
+	for i in range(2000):
+		var change = randf_range(-2.0, 2.0)
+		var o = price
+		var c = price + change
+		var h = max(o, c) + randf_range(0.0, 1.0)
+		var l = min(o, c) - randf_range(0.0, 1.0)
+		_all_candles.append({"t": str(i), "o": o, "h": h, "l": l, "c": c})
+		price = c

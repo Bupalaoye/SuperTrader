@@ -2,6 +2,7 @@
 
 [ext_resource type="Script" uid="uid://bvrqqkrsakca8" path="res://Scripts/KLineChart.gd" id="1_hpc76"]
 [ext_resource type="Script" uid="uid://cqi6nn2gngrpy" path="res://Scripts/GameController.gd" id="1_tr2i4"]
+[ext_resource type="Script" uid="uid://dcaj4luvcf85b" path="res://Scripts/CrosshairOverlay.gd" id="3_nhkr4"]
 
 [node name="StatsStation" type="Control" unique_id=99667446]
 layout_mode = 3
@@ -23,6 +24,16 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("1_hpc76")
+
+[node name="CrosshairOverlay" type="Control" parent="KLineChart" unique_id=1113313176]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("3_nhkr4")
 
 [node name="FileDialog" type="FileDialog" parent="." unique_id=417778728]
 unique_name_in_owner = true
