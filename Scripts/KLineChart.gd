@@ -23,7 +23,9 @@ var _overlay: CrosshairOverlay
 # --- 新增变量 ---
 var _order_layer: OrderOverlay
 var _drawing_layer: DrawingLayer
-var _indicator_layer: IndicatorLayer 
+var _indicator_layer: IndicatorLayer
+# [新增] 现价线层
+var _current_price_layer: CurrentPriceLayer 
 
 # --- 数据存储 ---
 var _all_candles: Array = [] 
@@ -46,31 +48,41 @@ var _drag_start_index: int = 0
 var _zoom_speed: float = 1.0
 
 func _ready():
-	_setup_overlay()
+	# 按顺序初始化，确保遮挡关系正确
 	
-	# 新增：初始化订单层
-	_order_layer = OrderOverlay.new()
-	_order_layer.name = "OrderOverlay"
-	add_child(_order_layer)
-	_order_layer.setup(self) # 把自己传过去
+	# 1. 底层
+	# (未来放网格层)
 	
-	# [新增] 初始化指标层 (放在 K 线之后，Order 之前，保证线在蜡烛上面但在订单下面)
+	# 2. K线 (KLineChart 自身的 _draw 画在最底层)
+	_generate_test_data()
+	_end_index = _all_candles.size() - 1
+
+	# 3. 指标层
 	_indicator_layer = IndicatorLayer.new()
 	_indicator_layer.name = "IndicatorLayer"
 	add_child(_indicator_layer)
-	move_child(_indicator_layer, 0) # 也可以设为 index 1
 	_indicator_layer.setup(self)
+
+	# 4. [新增] 现价线层 (在指标之上，但在订单之下)
+	_current_price_layer = CurrentPriceLayer.new()
+	_current_price_layer.name = "CurrentPriceLayer"
+	add_child(_current_price_layer)
+	_current_price_layer.setup(self)
+
+	# 5. 订单层
+	_order_layer = OrderOverlay.new()
+	_order_layer.name = "OrderOverlay"
+	add_child(_order_layer)
+	_order_layer.setup(self)
 	
-	# [新增] 初始化绘图层 (建议放在 OrderOverlay 之上，Crosshair 之下)
+	# 6. 绘图层
 	_drawing_layer = DrawingLayer.new()
 	_drawing_layer.name = "DrawingLayer"
 	add_child(_drawing_layer)
-	# 调整顺序，让 Crosshair 永远在最上面
-	move_child(_drawing_layer, get_child_count() - 2) 
 	_drawing_layer.setup(self)
 	
-	_generate_test_data()
-	_end_index = _all_candles.size() - 1
+	# 7. 十字光标 (最顶层)
+	_setup_overlay()
 
 func _setup_overlay():
 	_overlay = CrosshairOverlay.new()
@@ -327,6 +339,25 @@ func append_candle(data: Dictionary):
 	if _end_index == _all_candles.size() - 2:
 		_end_index += 1
 	queue_redraw()
+
+# [新增] 更新现价线
+func update_current_price(price: float):
+	if _current_price_layer:
+		_current_price_layer.update_price(price)
+
+# [新增] 更新最后一根 K 线的数据 (用于模拟 Tick 波动)
+func update_last_candle(data: Dictionary):
+	if _all_candles.is_empty(): return
+	
+	# 修改最后一个数据
+	_all_candles[_all_candles.size() - 1] = data
+	
+	# 强制重绘 K 线图 (虽然有点费性能，但为了看到 K 线伸缩是必须的)
+	queue_redraw()
+	
+	# 同时通知订单层重绘 (因为现价变了，订单盈亏可能变，虽然订单线本身不动，但为了严谨)
+	if _order_layer: _order_layer.queue_redraw()
+	# 指标层通常不需要在 Tick 级别重绘，除非你想做实时指标，这里先跳过以省性能
 
 func jump_to_index(idx: int):
 	_end_index = idx
