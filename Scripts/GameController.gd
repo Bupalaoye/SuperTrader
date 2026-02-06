@@ -12,6 +12,8 @@ extends Node
 @onready var btn_buy: Button = %BtnBuy
 @onready var btn_sell: Button = %BtnSell
 @onready var btn_close_all: Button = %BtnCloseAll
+@onready var terminal: TerminalPanel = %TerminalPanel 
+
 # 原有的回放 UI
 @onready var btn_load: Button = %BtnLoad 
 @onready var btn_play: Button = %BtnPlay
@@ -56,8 +58,14 @@ func _ready():
 	file_dialog.filters = ["*.csv ; MT4 History", "*.txt"]
 	
 	playback_timer.wait_time = 0.5
-	
+	# 5. 初始化终端面板
+	if terminal:
+		terminal.setup(account)
+	else:
+		printerr("警告：未找到 TerminalPanel 节点")
+
 	print("系统就绪! 请加载 CSV 数据。")
+	
 
 func _setup_ui_signals():
 	# 文件与回放

@@ -3,6 +3,7 @@
 [ext_resource type="Script" uid="uid://bvrqqkrsakca8" path="res://Scripts/KLineChart.gd" id="1_hpc76"]
 [ext_resource type="Script" uid="uid://cqi6nn2gngrpy" path="res://Scripts/GameController.gd" id="1_tr2i4"]
 [ext_resource type="Script" uid="uid://dcaj4luvcf85b" path="res://Scripts/CrosshairOverlay.gd" id="3_nhkr4"]
+[ext_resource type="Script" uid="uid://bievwlyih27k7" path="res://Scripts/TerminalPanel.gd" id="4_7rqgy"]
 
 [node name="StatsStation" type="Control" unique_id=99667446]
 layout_mode = 3
@@ -129,3 +130,50 @@ text = "SELL"
 unique_name_in_owner = true
 layout_mode = 2
 text = "Close All"
+
+[node name="TerminalPanel" type="PanelContainer" parent="UI_Canvas" unique_id=1525639473]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 0
+script = ExtResource("4_7rqgy")
+
+[node name="TabContainer" type="TabContainer" parent="UI_Canvas/TerminalPanel" unique_id=2009219990]
+layout_mode = 2
+current_tab = 1
+
+[node name="Trade" type="VBoxContainer" parent="UI_Canvas/TerminalPanel/TabContainer" unique_id=1753099054]
+visible = false
+layout_mode = 2
+metadata/_tab_index = 0
+
+[node name="TradeTree" type="Tree" parent="UI_Canvas/TerminalPanel/TabContainer/Trade" unique_id=1559597924]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_vertical = 3
+column_titles_visible = true
+hide_root = true
+
+[node name="History" type="VBoxContainer" parent="UI_Canvas/TerminalPanel/TabContainer" unique_id=1309065954]
+layout_mode = 2
+metadata/_tab_index = 1
+
+[node name="HistoryTree" type="Tree" parent="UI_Canvas/TerminalPanel/TabContainer/History" unique_id=228685030]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_vertical = 3
+column_titles_visible = true
+hide_root = true
+
+[node name="Journal" type="VBoxContainer" parent="UI_Canvas/TerminalPanel/TabContainer" unique_id=1335907042]
+visible = false
+layout_mode = 2
+metadata/_tab_index = 2
+
+[node name="JournalLog" type="RichTextLabel" parent="UI_Canvas/TerminalPanel/TabContainer/Journal" unique_id=199804253]
+unique_name_in_owner = true
+layout_mode = 2
