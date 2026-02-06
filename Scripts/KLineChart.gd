@@ -82,17 +82,17 @@ func _ready():
 	add_child(_current_price_layer)
 	_current_price_layer.setup(self)
 
-	# 5. 订单层
-	_order_layer = OrderOverlay.new()
-	_order_layer.name = "OrderOverlay"
-	add_child(_order_layer)
-	_order_layer.setup(self)
-	
-	# 6. 绘图层
+	# 5. 绘图层 ([修复核心] 必须先添加 DrawingLayer，再添加 OrderOverlay)
 	_drawing_layer = DrawingLayer.new()
 	_drawing_layer.name = "DrawingLayer"
 	add_child(_drawing_layer)
 	_drawing_layer.setup(self)
+	
+	# 6. 订单层 (现在它在 DrawingLayer 之上，能优先接收鼠标)
+	_order_layer = OrderOverlay.new()
+	_order_layer.name = "OrderOverlay"
+	add_child(_order_layer)
+	_order_layer.setup(self)
 	
 	# 7. 十字光标 (最顶层)
 	_setup_overlay()
