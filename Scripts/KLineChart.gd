@@ -93,21 +93,17 @@ func _draw():
 		if rect_height < 1.0: rect_height = 1.0 
 		draw_rect(Rect2(x_pos, rect_top, candle_width, rect_height), color)
 
-# --- 核心交互重构 (Input Handling Refactor) ---
-# 这是解决所有交互问题的关键函数
 func _gui_input(event):
-	
 	# 1. 鼠标按键事件
 	if event is InputEventMouseButton:
 		
 		# --- A. 中键：切换十字光标模式 ---
 		if event.button_index == MOUSE_BUTTON_MIDDLE and event.pressed:
-			print("中键点击：切换模式") # Debug Log
 			_toggle_crosshair_mode()
-			accept_event() # 消费事件，不再传递
+			accept_event() 
 			return
 
-		# --- B. 滚轮：缩放 (全局有效) ---
+		# --- B. 滚轮 ---
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
 			_zoom_chart(1.1)
 			accept_event()
@@ -115,23 +111,31 @@ func _gui_input(event):
 			_zoom_chart(0.9)
 			accept_event()
 			
-		# --- C. 左键：根据当前模式分发逻辑 ---
+		# --- C. 左键 ---
 		elif event.button_index == MOUSE_BUTTON_LEFT:
 			if event.pressed:
-				# 按下逻辑
 				match _current_mode:
 					Mode.NONE:
 						_start_drag(event.position.x)
 					Mode.CROSSHAIR:
 						_start_measure(event.position)
 			else:
-				# 松开逻辑
 				match _current_mode:
 					Mode.DRAG_VIEW:
 						_stop_drag()
 					Mode.MEASURE:
 						_stop_measure()
 
+	# 2. 鼠标移动事件
+	elif event is InputEventMouseMotion:
+		# 移动事件太频繁，不要一直 print，只在特定模式下 print
+		if _current_mode == Mode.CROSSHAIR:
+			# print("鼠标移动中... 通知 Overlay 更新") # 如果觉得太卡，这行可以注释
+			if _overlay:
+				_overlay.update_crosshair(event.position)
+				
+		elif _current_mode == Mode.DRAG_VIEW:
+			_process_drag(event.position.x)
 	# 2. 鼠标移动事件
 	elif event is InputEventMouseMotion:
 		match _current_mode:
