@@ -10,6 +10,8 @@ signal balance_updated(balance: float)
 signal order_opened(order: OrderData)
 # 当订单平仓时发出
 signal order_closed(order: OrderData)
+# [Stage 4 新增] 订单被修改信号 (专门用于 SL/TP 变更，不会导致 UI 添加重复行)
+signal order_modified(order: OrderData)
 
 # --- 账户配置 ---
 @export var initial_balance: float = 10000.0
@@ -90,18 +92,18 @@ func _finalize_order(order: OrderData, close_price: float, close_time: String):
 # 在每一根 K 线或 Tick 更新时调用此函数
 func update_equity(current_price: float):
 	var total_floating_profit = 0.0
-	
-	for order in _active_orders:
-		# 实时计算每一单的浮动盈亏
-		var floating = _calculate_profit(order, current_price)
+	# 倒序遍历，因为可能涉及到平仓删除数组元素
+	for i in range(_active_orders.size() - 1, -1, -1):
+		var order = _active_orders[i]
 		
-		# 之前这里漏了，导致 UI 面板读到的永远是 0
-		order.profit = floating 
+		# 1. 检查 SL/TP 触发 (模拟撮合)
+		var is_closed = _check_sl_tp(order, current_price)
 		
-		total_floating_profit += floating
-		
-		# (未来扩展：在这里检查 SL 和 TP 是否触发)
-		# _check_sl_tp(order, current_price)
+		if not is_closed:
+			# 2. 如果没平仓，计算浮盈
+			var floating = _calculate_profit(order, current_price)
+			order.profit = floating
+			total_floating_profit += floating
 		
 	var equity = _balance + total_floating_profit
 	equity_updated.emit(equity, total_floating_profit)
@@ -129,3 +131,50 @@ func get_active_orders() -> Array[OrderData]:
 
 func get_history_orders() -> Array[OrderData]:
 	return _history_orders
+
+# [Stage 4 修复] 修改订单接口 (UI 拖拽松手后调用这里)
+func modify_order(ticket_id: int, new_sl: float, new_tp: float):
+	for order in _active_orders:
+		if order.ticket_id == ticket_id:
+			# 只要数据有变化才触发信号
+			if not is_equal_approx(order.stop_loss, new_sl) or not is_equal_approx(order.take_profit, new_tp):
+				order.stop_loss = new_sl
+				order.take_profit = new_tp
+				print(">>> 订单修改 #%d: SL=%.5f, TP=%.5f" % [ticket_id, new_sl, new_tp])
+				
+				# [修复] 之前这里错用了 order_opened，导致 UI 添加重复行
+				# 现在改为发射专用信号
+				order_modified.emit(order)
+			return
+
+# [内部新增] 检查止损止盈
+func _check_sl_tp(order: OrderData, current_price: float) -> bool:
+	var hit = false
+	var close_reason = ""
+	
+	if order.type == OrderData.Type.BUY:
+		# 多单止损：现价 <= SL
+		if order.stop_loss > 0 and current_price <= order.stop_loss:
+			hit = true; close_reason = "SL"
+		# 多单止盈：现价 >= TP
+		elif order.take_profit > 0 and current_price >= order.take_profit:
+			hit = true; close_reason = "TP"
+			
+	elif order.type == OrderData.Type.SELL:
+		# 空单止损：现价 >= SL
+		if order.stop_loss > 0 and current_price >= order.stop_loss:
+			hit = true; close_reason = "SL"
+		# 空单止盈：现价 <= TP
+		elif order.take_profit > 0 and current_price <= order.take_profit:
+			hit = true; close_reason = "TP"
+	
+	if hit:
+		print("!!! 触发 %s 平仓 !!!" % close_reason)
+		# 获取当前时间字符串
+		var t_str = Time.get_datetime_string_from_system().replace("T", " ")
+		# 执行平仓，价格按 SL/TP 价还是现价？模拟器通常按触发价(Order Price)或滑点后的现价
+		# 这里简单处理：按触发那一刻的 current_price 成交
+		close_market_order(order.ticket_id, current_price, t_str)
+		return true
+		
+	return false

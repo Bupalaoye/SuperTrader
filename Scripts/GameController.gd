@@ -27,6 +27,9 @@ extends Node
 # --- 核心子系统 ---
 var account: AccountManager # 账户核心
 
+# [Stage 4 新增] 音效播放器
+var sfx_player: AudioStreamPlayer
+
 # --- 核心数据 ---
 var full_history_data: Array = [] 
 var current_playback_index: int = 0 
@@ -38,6 +41,12 @@ var tick_delay: float = 0.1 # 每个微 Tick 之间的间隔 (秒)
 
 func _ready():
 	print("正在初始化控制器...")
+	
+	# --- 初始化音效 ---
+	sfx_player = AudioStreamPlayer.new()
+	add_child(sfx_player)
+	# 如果你有资源，可以取消注释并加载
+	# sfx_player.stream = load("res://Assets/Sounds/close.wav")
 	
 	# 1. 初始化账户系统
 	account = AccountManager.new()
@@ -52,14 +61,30 @@ func _ready():
 		# 传递 active 和 history
 		chart.update_visual_orders(account.get_active_orders(), account.get_history_orders())
 	)
+	# [Stage 4 修复] 订单修改：刷新图表
+	account.order_modified.connect(func(o):
+		print("UI通知: 订单修改 #", o.ticket_id)
+		chart.update_visual_orders(account.get_active_orders(), account.get_history_orders())
+	)
 	account.order_closed.connect(func(o): 
 		print("UI通知: 平仓完成 #", o.ticket_id)
 		# 传递 active 和 history
 		chart.update_visual_orders(account.get_active_orders(), account.get_history_orders())
+		# [Stage 4 新增] 平仓时播放音效
+		_play_trade_sound()
 	)
 
 	# 3. 连接 UI 交互信号
 	_setup_ui_signals()
+	
+	# [新增] 连接订单层拖拽信号
+	var order_layer = chart.get_node("OrderOverlay")
+	if order_layer:
+		order_layer.request_modify_order.connect(func(ticket, sl, tp):
+			account.modify_order(ticket, sl, tp)
+		)
+	else:
+		printerr("警告: 无法在控制器中连接 OrderOverlay")
 	
 	# 4. 初始化基础参数
 	file_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
@@ -207,6 +232,14 @@ func _on_account_equity_updated(equity: float, floating: float):
 			lbl_equity.modulate = Color.GREEN
 		else:
 			lbl_equity.modulate = Color.RED
+
+# [Stage 4 新增] 音效播放逻辑 (简单的占位符)
+func _play_trade_sound():
+	if sfx_player.stream != null:
+		sfx_player.play()
+	else:
+		# 如果没有音频文件，打印日志代替
+		print(">> [SOUND] Cash Register/Close Sound <<")
 
 # [新增] 模拟一根 K 线内部的波动
 func _simulate_candle_ticks(final_data: Dictionary):

@@ -67,6 +67,8 @@ func setup(acc: AccountManager):
 	_account.order_opened.connect(_on_order_opened)
 	_account.order_closed.connect(_on_order_closed)
 	_account.equity_updated.connect(_on_equity_updated)
+	# [Stage 4 新增] 监听修改信号
+	_account.order_modified.connect(_on_order_modified)
 	
 	log_message("账户连接成功。余额: %.2f" % _account.get_balance())
 
@@ -82,6 +84,21 @@ func _on_order_closed(order: OrderData):
 	_remove_trade_row(order.ticket_id)
 	# 2. 添加到 History 表格
 	_add_history_row(order)
+
+# [Stage 4 新增] 处理拖拽修改后的表格刷新
+func _on_order_modified(order: OrderData):
+	log_message("订单 #%d 参数变更: SL=%.5f TP=%.5f" % [order.ticket_id, order.stop_loss, order.take_profit])
+	
+	# 遍历表格找到对应行，只更新 SL 和 TP 列
+	var root = trade_tree.get_root()
+	var item = root.get_first_child()
+	while item:
+		var item_order = item.get_metadata(0)
+		if item_order and item_order.ticket_id == order.ticket_id:
+			item.set_text(TradeCol.SL, "%.5f" % order.stop_loss)
+			item.set_text(TradeCol.TP, "%.5f" % order.take_profit)
+			break
+		item = item.get_next()
 
 func _on_equity_updated(equity: float, floating: float):
 	# 这是高频调用 (每一跳)，只更新 Trade 表格的 Profit 列和背景色

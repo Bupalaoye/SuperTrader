@@ -384,14 +384,22 @@ func jump_to_index(idx: int):
 	queue_redraw()
 
 func _generate_test_data():
-	var price = 100.0
-	for i in range(2000):
-		var change = randf_range(-2.0, 2.0)
+	var price = 1.10000 # 模拟欧元兑美元价格
+	var current_time = Time.get_unix_time_from_system()
+	
+	for i in range(100): # 生成100根K线
+		var change = randf_range(-0.0005, 0.0005)
 		var o = price
 		var c = price + change
-		var h = max(o, c) + randf_range(0.0, 1.0)
-		var l = min(o, c) - randf_range(0.0, 1.0)
-		_all_candles.append({"t": str(i), "o": o, "h": h, "l": l, "c": c})
+		var h = max(o, c) + randf_range(0.0, 0.0002)
+		var l = min(o, c) - randf_range(0.0, 0.0002)
+		
+		# [Bug修复核心] 生成 Time 字符串 "YYYY.MM.DD HH:mm"
+		# 每一根K线间隔 1 小时 (3600秒)
+		current_time += 3600 
+		var t_str = Time.get_datetime_string_from_unix_time(current_time).replace("T", " ").left(16)
+		
+		_all_candles.append({"t": t_str, "o": o, "h": h, "l": l, "c": c})
 		price = c
 
 # --- 对外公开接口 ---
