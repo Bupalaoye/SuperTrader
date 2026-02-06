@@ -36,6 +36,10 @@ var confirm_dialog: ModifyConfirmDialog
 # [NEW] 平仓弹窗引用
 var close_dialog: CloseOrderDialog
 
+# [NEW] 订单窗口系统
+var order_window: OrderWindow
+var order_window_overlay: Control
+
 # --- 核心数据 ---
 var full_history_data: Array = [] 
 var current_playback_index: int = 0 
@@ -143,7 +147,37 @@ func _ready():
 	else:
 		printerr("警告：未找到 TerminalPanel 节点")
 
+	# --- 初始化交易窗口系统 ---
+	# 1. 创建半透明遮罩 (Overlay)
+	order_window_overlay = Control.new()
+	order_window_overlay.set_anchors_preset(Control.PRESET_FULL_RECT) # 全屏
+	order_window_overlay.visible = false
+	# 创建一个黑色半透明背景
+	var bg = ColorRect.new()
+	bg.color = Color(0, 0, 0, 0.5)
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	order_window_overlay.add_child(bg)
+	# 点击背景关闭窗口
+	bg.gui_input.connect(func(ev):
+		if ev is InputEventMouseButton and ev.pressed:
+			order_window_overlay.visible = false
+	)
+	# 添加到 CanvasLayer 保证在最上层
+	add_child(order_window_overlay)
+	
+	# 2. 创建订单窗口
+	order_window = OrderWindow.new()
+	# 居中显示
+	order_window.set_anchors_preset(Control.PRESET_CENTER) 
+	# 将窗口添加到遮罩层里
+	order_window_overlay.add_child(order_window)
+	
+	# 3. 连接信号：窗口请求下单 -> 控制器执行
+	order_window.market_order_requested.connect(_on_order_window_submit)
+	order_window.window_closed.connect(func(): order_window_overlay.visible = false)
+
 	print("系统就绪! 请加载 CSV 数据。")
+
 	
 
 func _setup_ui_signals():
@@ -154,13 +188,13 @@ func _setup_ui_signals():
 	if playback_timer: playback_timer.timeout.connect(_on_timer_tick)
 	
 	# 交易控制
-	# 点击 BUY -> 开 0.1 手多单
+	# 点击 BUY -> 打开订单窗口
 	if btn_buy: 
-		btn_buy.pressed.connect(func(): _execute_trade(OrderData.Type.BUY))
+		btn_buy.pressed.connect(func(): _open_order_window(OrderData.Type.BUY))
 	
-	# 点击 SELL -> 开 0.1 手空单
+	# 点击 SELL -> 打开订单窗口
 	if btn_sell: 
-		btn_sell.pressed.connect(func(): _execute_trade(OrderData.Type.SELL))
+		btn_sell.pressed.connect(func(): _open_order_window(OrderData.Type.SELL))
 		
 	# 点击 Close All -> 平掉所有单子
 	if btn_close_all:
@@ -198,6 +232,39 @@ func _execute_trade(type: OrderData.Type):
 	
 	# 下单: 类型, 手数0.1, 现价, 时间
 	account.open_market_order(type, 0.1, price, time_str)
+
+# --- 订单窗口接口 ---
+
+# 打开订单窗口
+func _open_order_window(default_type: OrderData.Type):
+	if _cached_last_candle.is_empty():
+		print("没有数据，无法交易")
+		return
+		
+	var price = _cached_last_candle.c
+	
+	# 显示遮罩和窗口
+	order_window_overlay.visible = true
+	order_window.visible = true
+	order_window_overlay.move_to_front() # 确保在最前
+	
+	# 初始化数值 (默认 0.1 手，SL/TP 为 0)
+	order_window.setup_values(0.1, 0.0, 0.0)
+	
+	# 立即刷新一次价格
+	order_window.update_market_data(price, price) 
+	# 注意：真实交易里 bid 和 ask 有点差，这里模拟器暂且认为 bid=ask=close
+
+# 接收窗口的下单请求
+func _on_order_window_submit(type: OrderData.Type, lots: float, sl: float, tp: float):
+	if _cached_last_candle.is_empty(): return
+	
+	var price = _cached_last_candle.c
+	var time_str = _cached_last_candle.t
+	
+	# 调用账户开仓，传入完整的 SL/TP
+	account.open_market_order(type, lots, price, time_str, sl, tp)
+
 
 # --- 回放逻辑 ---
 
@@ -356,6 +423,11 @@ func _process_tick(candle_state: Dictionary, current_price: float):
 	
 	# 3. 喂给账户系统计算盈亏 (核心交易逻辑)
 	account.update_equity(current_price)
+	
+	# [新增] 如果订单窗口是打开的，更新上面的价格标签
+	if order_window and order_window.visible:
+		# 模拟 bid/ask，这里简单传入 current_price
+		order_window.update_market_data(current_price, current_price)
 	
 	# 4. 刷新订单层
 	# 注意：Tick 频繁更新历史订单可能费性能，这里只传 Active 也行
