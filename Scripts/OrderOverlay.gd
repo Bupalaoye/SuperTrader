@@ -2,7 +2,8 @@ class_name OrderOverlay
 extends Control
 
 # --- 信号 ---
-signal request_modify_order(ticket: int, sl: float, tp: float)
+# 不再直接发给后端，而是发给 Controller 去弹窗
+signal request_confirm_window(order_obj: OrderData, new_sl: float, new_tp: float)
 
 # --- 依赖 ---
 var _chart: KLineChart 
@@ -127,31 +128,59 @@ func _finish_dragging():
 		print("[ERR] 找不到订单数据")
 		return
 	
-	var final_sl = order.stop_loss
-	var final_tp = order.take_profit
 	var new_p = _drag_current_price
+	var open_p = order.open_price
+	var old_sl = order.stop_loss
+	var old_tp = order.take_profit
 	
-	# 如果拖动的是 SL 线或 TP 线，直接赋值
-	if _hover_line_type == "SL": final_sl = new_p
-	elif _hover_line_type == "TP": final_tp = new_p
+	var final_sl = old_sl
+	var final_tp = old_tp
 	
-	# 如果从【开仓线】拖出来：智能判断是 SL 还是 TP
-	elif _hover_line_type == "OPEN":
-		var is_buy = (order.type == OrderData.Type.BUY)
-		var is_above = (new_p > order.open_price)
+	# --- 智能判定逻辑 ---
+	# 规则：
+	# 1. Buy单：价格 > Open 为 TP，价格 < Open 为 SL
+	# 2. Sell单：价格 < Open 为 TP，价格 > Open 为 SL
+	# 3. 无论你拖的是原来的 SL 线还是 TP 线，只要松手，就按当前位置重新分配角色
+	# 4. 如果新位置的角色(如 TP)已经有人了，覆盖它
+	
+	var is_buy = (order.type == OrderData.Type.BUY)
+	var is_profit_zone = false
+	
+	if is_buy:
+		is_profit_zone = (new_p > open_p)
+	else:
+		is_profit_zone = (new_p < open_p)
 		
-		# 逻辑：
-		# 买单：往下拖是止损(SL)，往上拖是止盈(TP)
-		# 卖单：往上拖是止损(SL)，往下拖是止盈(TP)
-		if is_buy:
-			if is_above: final_tp = new_p # 买单高位 = 赚
-			else: final_sl = new_p        # 买单低位 = 亏
-		else: # Sell
-			if is_above: final_sl = new_p # 卖单高位 = 亏
-			else: final_tp = new_p        # 卖单低位 = 赚
+	if is_profit_zone:
+		# 落在了盈利区 -> 这是新的 TP
+		final_tp = new_p
+		# 如果我原本拖的是 SL 线，现在变成了 TP，那 SL 就要清空
+		# 如果我原本拖的就有 TP 线，那就覆盖旧 TP，SL 保持不变
+		if _hover_line_type == "SL":
+			final_sl = 0.0 # 原来的 SL 没了，因为被我拖到盈利区变成了 TP
+			
+	else:
+		# 落在了亏损区 -> 这是新的 SL
+		final_sl = new_p
+		# 同理，如果我原本拖的是 TP 线，现在变成了 SL，那 TP 就要清空
+		if _hover_line_type == "TP":
+			final_tp = 0.0
+
+	# 特殊情况：如果是从 OPEN 线拖出来的，只需设置新值，保留旧的另一半
+	if _hover_line_type == "OPEN":
+		# 如果落在盈利区，设置 TP，SL 不动
+		# 如果落在亏损区，设置 SL，TP 不动
+		if is_profit_zone:
+			final_tp = new_p
+			final_sl = old_sl # 保持原样
+		else:
+			final_sl = new_p
+			final_tp = old_tp # 保持原样
+
+	print("[DEBUG] 拖拽请求: Order #%d | SL: %.5f | TP: %.5f" % [order.ticket_id, final_sl, final_tp])
 	
-	print("[DEBUG] 提交修改 -> Order #%d | New SL: %.5f | New TP: %.5f" % [_hover_ticket, final_sl, final_tp])
-	request_modify_order.emit(_hover_ticket, final_sl, final_tp)
+	# [修改] 不直接改，而是请求弹窗
+	request_confirm_window.emit(order, final_sl, final_tp)
 
 func _get_order_by_ticket(ticket: int) -> OrderData:
 	for o in _active_orders: if o.ticket_id == ticket: return o
@@ -167,19 +196,33 @@ func _draw():
 	# 绘制活跃
 	for o in _active_orders: _draw_active_order_lines(o, rect_size.x)
 	
-	# 绘制拖拽时的虚线
+	# 绘制拖拽时的虚线 (智能变色)
 	if _state == State.DRAGGING:
-		var y = _chart.map_price_to_y_public(_drag_current_price)
-		
-		var label_str = "SET SL/TP: %.5f" % _drag_current_price
-		# 算出预计盈亏
-		var o = _get_order_by_ticket(_hover_ticket)
-		if o:
-			var profit = _calc_projected_profit(o, _drag_current_price)
-			label_str += " | $%.2f" % profit
-			var col = Color.GREEN if profit >= 0 else Color.RED
-			draw_dashed_line(Vector2(0, y), Vector2(rect_size.x, y), col, 1.5, 4.0)
-			draw_string(_font, get_local_mouse_position() + Vector2(20, -20), label_str, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, col)
+		var order = _get_order_by_ticket(_hover_ticket)
+		if order:
+			var y = _chart.map_price_to_y_public(_drag_current_price)
+			
+			# 智能计算颜色：如果在这个位置松手，是赚钱(TP)还是亏钱(SL)？
+			# Buy: Above=TP(Blue/Green), Below=SL(Red)
+			# Sell: Above=SL(Red), Below=TP(Blue/Green)
+			var is_profit = false
+			if order.type == OrderData.Type.BUY:
+				is_profit = _drag_current_price > order.open_price
+			else:
+				is_profit = _drag_current_price < order.open_price
+			
+			var color = Color.DODGER_BLUE if is_profit else Color.ORANGE_RED
+			var type_str = "TP" if is_profit else "SL"
+			
+			# 画线
+			draw_dashed_line(Vector2(0, y), Vector2(rect_size.x, y), color, 1.5, 4.0)
+			
+			# 显示金额预估
+			var profit = _calc_projected_profit(order, _drag_current_price)
+			var info = "%s: %.5f ($%.2f)" % [type_str, _drag_current_price, profit]
+			
+			var text_pos = get_local_mouse_position() + Vector2(25, -10)
+			draw_string(_font, text_pos, info, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, color)
 
 func _draw_active_order_lines(order: OrderData, width: float):
 	var y_open = _chart.map_price_to_y_public(order.open_price)

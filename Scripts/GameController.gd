@@ -30,6 +30,9 @@ var account: AccountManager # 账户核心
 # [Stage 4 新增] 音效播放器
 var sfx_player: AudioStreamPlayer
 
+# [NEW] 订单修改确认弹窗
+var confirm_dialog: ModifyConfirmDialog
+
 # --- 核心数据 ---
 var full_history_data: Array = [] 
 var current_playback_index: int = 0 
@@ -47,6 +50,10 @@ func _ready():
 	add_child(sfx_player)
 	# 如果你有资源，可以取消注释并加载
 	# sfx_player.stream = load("res://Assets/Sounds/close.wav")
+	
+	# [新增] 初始化确认弹窗
+	confirm_dialog = ModifyConfirmDialog.new()
+	add_child(confirm_dialog)
 	
 	# 1. 初始化账户系统
 	account = AccountManager.new()
@@ -77,11 +84,18 @@ func _ready():
 	# 3. 连接 UI 交互信号
 	_setup_ui_signals()
 	
-	# [新增] 连接订单层拖拽信号
+	# [修改] 连接订单层的弹窗信号，而不是直接修改订单
 	var order_layer = chart.get_node("OrderOverlay")
 	if order_layer:
-		order_layer.request_modify_order.connect(func(ticket, sl, tp):
+		# 连接弹窗的确认信号 -> 账户修改
+		confirm_dialog.confirmed_modification.connect(func(ticket, sl, tp):
 			account.modify_order(ticket, sl, tp)
+		)
+		
+		# 连接 OrderOverlay 的请求信号 -> 弹窗显示
+		order_layer.request_confirm_window.connect(func(order_obj, new_sl, new_tp):
+			# 弹出确认框
+			confirm_dialog.popup_order(order_obj, new_sl, new_tp, account.contract_size)
 		)
 	else:
 		printerr("警告: 无法在控制器中连接 OrderOverlay")
