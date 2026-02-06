@@ -36,6 +36,9 @@ unique_name_in_owner = true
 layout_mode = 2
 size_flags_vertical = 3
 script = ExtResource("1_hpc76")
+candle_width = null
+spacing = null
+wick_color = null
 
 [node name="CrosshairOverlay" type="Control" parent="VSplitContainer/KLineChart" unique_id=1113313176]
 layout_mode = 1

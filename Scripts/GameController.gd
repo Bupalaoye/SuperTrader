@@ -18,6 +18,9 @@ extends Node
 @onready var btn_load: Button = %BtnLoad 
 @onready var btn_play: Button = %BtnPlay
 
+# 绘图工具 UI
+@onready var btn_trendline: Button = %BtnTrendLine
+
 # --- 核心子系统 ---
 var account: AccountManager # 账户核心
 
@@ -90,6 +93,12 @@ func _setup_ui_signals():
 			var price = _cached_last_candle.c
 			var time_str = _cached_last_candle.t
 			account.close_market_order(-1, price, time_str)
+		)
+	
+	# 绘图工具
+	if btn_trendline:
+		btn_trendline.pressed.connect(func():
+			chart.start_drawing("TrendLine")
 		)
 
 # --- 交易执行包装器 ---

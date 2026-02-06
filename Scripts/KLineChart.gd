@@ -21,7 +21,8 @@ enum Mode {
 # --- 节点引用 ---
 var _overlay: CrosshairOverlay
 # --- 新增变量 ---
-var _order_layer: OrderOverlay 
+var _order_layer: OrderOverlay
+var _drawing_layer: DrawingLayer 
 
 # --- 数据存储 ---
 var _all_candles: Array = [] 
@@ -51,6 +52,14 @@ func _ready():
 	_order_layer.name = "OrderOverlay"
 	add_child(_order_layer)
 	_order_layer.setup(self) # 把自己传过去
+	
+	# [新增] 初始化绘图层 (建议放在 OrderOverlay 之上，Crosshair 之下)
+	_drawing_layer = DrawingLayer.new()
+	_drawing_layer.name = "DrawingLayer"
+	add_child(_drawing_layer)
+	# 调整顺序，让 Crosshair 永远在最上面
+	move_child(_drawing_layer, get_child_count() - 2) 
+	_drawing_layer.setup(self)
 	
 	_generate_test_data()
 	_end_index = _all_candles.size() - 1
@@ -355,3 +364,27 @@ func get_x_by_time(time_str: String) -> float:
 	var x_pos = relative_pos * candle_full_width + candle_width / 2
 	
 	return x_pos
+
+# --- KLineChart 新增辅助方法 ---
+
+# 根据屏幕 X 坐标获取对应的时间字符串 (反向查询)
+func get_time_at_x(x: float) -> String:
+	var idx = _get_index_at_x(x)
+	# 范围检查
+	if idx < 0 or idx >= _all_candles.size():
+		return ""
+	return _all_candles[idx].t
+
+# 根据屏幕 Y 坐标获取对应的价格 (反向查询)
+func get_price_at_y(y: float) -> float:
+	# 复用之前的 _get_price_at_y 逻辑
+	return _get_price_at_y(y)
+
+# [辅助] 暴露当前的 candle width 以便计算点击容差
+func get_candle_width() -> float:
+	return candle_width + spacing
+
+# [新增公开接口] 只要能拿到 chart 就能开始画线
+func start_drawing(tool_name: String):
+	if _drawing_layer:
+		_drawing_layer.start_tool(tool_name)
