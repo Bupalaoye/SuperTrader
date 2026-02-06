@@ -38,11 +38,13 @@ func _ready():
 	account.equity_updated.connect(_on_account_equity_updated)
 	account.order_opened.connect(func(o): 
 		print("UI通知: 开仓成功 #", o.ticket_id)
-		chart.update_visual_orders(account.get_active_orders()) # 立即刷新
+		# 传递 active 和 history
+		chart.update_visual_orders(account.get_active_orders(), account.get_history_orders())
 	)
 	account.order_closed.connect(func(o): 
 		print("UI通知: 平仓完成 #", o.ticket_id)
-		chart.update_visual_orders(account.get_active_orders()) # 立即刷新
+		# 传递 active 和 history
+		chart.update_visual_orders(account.get_active_orders(), account.get_history_orders())
 	)
 
 	# 3. 连接 UI 交互信号
@@ -150,8 +152,8 @@ func _on_timer_tick():
 	# 这里简单用 Close 价格来刷新净值
 	account.update_equity(candle.c)
 	
-	# 4. [新增] 每一跳都刷新一次订单位置 (因为K线动了，坐标系可能平移)
-	chart.update_visual_orders(account.get_active_orders())
+	# 4. [修改] 传递活跃和历史订单
+	chart.update_visual_orders(account.get_active_orders(), account.get_history_orders())
 	
 	current_playback_index += 1
 

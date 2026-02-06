@@ -25,7 +25,9 @@ var _order_layer: OrderOverlay
 
 # --- 数据存储 ---
 var _all_candles: Array = [] 
-var _visible_count: int = 100 
+var _visible_count: int = 100
+# [新增] 时间索引缓存，用于快速查找特定时间的K线位置
+var _time_to_index_cache: Dictionary = {} 
 
 # --- 视图状态 ---
 var _end_index: int = 0 
@@ -286,10 +288,21 @@ func _clamp_view():
 func set_history_data(data: Array):
 	_all_candles = data
 	_end_index = data.size() - 1
+	
+	# [新增] 重建缓存
+	_time_to_index_cache.clear()
+	for i in range(data.size()):
+		var t_str = data[i].t
+		_time_to_index_cache[t_str] = i
+	
 	queue_redraw()
 
 func append_candle(data: Dictionary):
 	_all_candles.append(data)
+	
+	# [新增] 更新缓存
+	_time_to_index_cache[data.t] = _all_candles.size() - 1
+	
 	if _end_index == _all_candles.size() - 2:
 		_end_index += 1
 	queue_redraw()
@@ -317,7 +330,28 @@ func map_price_to_y_public(price: float) -> float:
 	# 直接复用内部逻辑
 	return _map_price_to_y(price)
 
-# 更新订单可视化
-func update_visual_orders(orders: Array[OrderData]):
+# [修改] 现在接收 active 和 history 两个参数
+func update_visual_orders(active: Array[OrderData], history: Array[OrderData] = []):
 	if _order_layer:
-		_order_layer.update_orders(orders)
+		_order_layer.update_orders(active, history)
+
+# [新增] 根据时间字符串获取屏幕 X 坐标
+# 如果时间不在当前数据内，返回 -1
+func get_x_by_time(time_str: String) -> float:
+	if not _time_to_index_cache.has(time_str):
+		return -1.0
+	
+	var target_index = _time_to_index_cache[time_str]
+	
+	# 反向计算 X 坐标
+	# 逻辑参考 _draw 中的 calculation
+	var chart_width = size.x
+	var candle_full_width = candle_width + spacing
+	var start_index = max(0, _end_index - _visible_count)
+	
+	# 如果该索引不在可视范围内，虽然能算出来，但可以做个标记
+	# 这里不仅算 X，还要算相对位置
+	var relative_pos = target_index - start_index
+	var x_pos = relative_pos * candle_full_width + candle_width / 2
+	
+	return x_pos
