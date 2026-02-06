@@ -20,6 +20,9 @@ func setup(chart: KLineChart):
 	_chart = chart
 	mouse_filter = MouseFilter.MOUSE_FILTER_PASS # 必须允许鼠标事件通过(但也拦截)
 	set_anchors_preset(Control.PRESET_FULL_RECT)
+	
+	# 开启焦点模式，允许点击时获取焦点以接收键盘事件
+	focus_mode = Control.FOCUS_CLICK
 
 # --- 核心入口：开始画线 ---
 func start_tool(tool_type_name: String):
@@ -47,9 +50,18 @@ func _draw():
 func _gui_input(event):
 	if not _chart: return
 	
+	# 键盘事件监听 (删除功能)
+	if event is InputEventKey:
+		if event.pressed and (event.keycode == KEY_DELETE or event.keycode == KEY_BACKSPACE):
+			_delete_selected_drawing()
+			accept_event() # 阻止事件传播
+			return
+	
 	if event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_LEFT:
 			if event.pressed:
+				# 点击时抢占焦点，以接收后续的键盘事件
+				grab_focus()
 				_on_mouse_down(event.position)
 			else:
 				_on_mouse_up()
@@ -136,6 +148,21 @@ func _get_chart_data(pos: Vector2) -> Dictionary:
 func _deselect_all():
 	for obj in _drawings:
 		obj.selected = false
+
+func _delete_selected_drawing():
+	"""删除当前选中的所有对象"""
+	var did_delete = false
+	# 倒序遍历，安全删除
+	for i in range(_drawings.size() - 1, -1, -1):
+		if _drawings[i].selected:
+			_drawings.remove_at(i)
+			did_delete = true
+	
+	if did_delete:
+		print("已删除选中对象")
+		_active_tool = null
+		_current_state = State.IDLE
+		queue_redraw()
 
 func _finish_creation():
 	print("画图完成")

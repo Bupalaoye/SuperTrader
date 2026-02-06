@@ -94,9 +94,14 @@ func update_equity(current_price: float):
 	for order in _active_orders:
 		# 实时计算每一单的浮动盈亏
 		var floating = _calculate_profit(order, current_price)
+		
+		# 之前这里漏了，导致 UI 面板读到的永远是 0
+		order.profit = floating 
+		
 		total_floating_profit += floating
 		
 		# (未来扩展：在这里检查 SL 和 TP 是否触发)
+		# _check_sl_tp(order, current_price)
 		
 	var equity = _balance + total_floating_profit
 	equity_updated.emit(equity, total_floating_profit)
