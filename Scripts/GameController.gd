@@ -36,8 +36,14 @@ func _ready():
 	# 2. 连接账户信号
 	account.balance_updated.connect(_on_account_balance_updated)
 	account.equity_updated.connect(_on_account_equity_updated)
-	account.order_opened.connect(func(o): print("UI通知: 开仓成功 #", o.ticket_id))
-	account.order_closed.connect(func(o): print("UI通知: 平仓完成 #", o.ticket_id))
+	account.order_opened.connect(func(o): 
+		print("UI通知: 开仓成功 #", o.ticket_id)
+		chart.update_visual_orders(account.get_active_orders()) # 立即刷新
+	)
+	account.order_closed.connect(func(o): 
+		print("UI通知: 平仓完成 #", o.ticket_id)
+		chart.update_visual_orders(account.get_active_orders()) # 立即刷新
+	)
 
 	# 3. 连接 UI 交互信号
 	_setup_ui_signals()
@@ -143,6 +149,9 @@ func _on_timer_tick():
 	# 3. [关键!] 喂给账户系统计算盈亏
 	# 这里简单用 Close 价格来刷新净值
 	account.update_equity(candle.c)
+	
+	# 4. [新增] 每一跳都刷新一次订单位置 (因为K线动了，坐标系可能平移)
+	chart.update_visual_orders(account.get_active_orders())
 	
 	current_playback_index += 1
 

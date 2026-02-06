@@ -19,7 +19,9 @@ enum Mode {
 @export var bg_color: Color = Color.hex(0x111111FF) 
 
 # --- 节点引用 ---
-var _overlay: CrosshairOverlay 
+var _overlay: CrosshairOverlay
+# --- 新增变量 ---
+var _order_layer: OrderOverlay 
 
 # --- 数据存储 ---
 var _all_candles: Array = [] 
@@ -41,6 +43,13 @@ var _zoom_speed: float = 1.0
 
 func _ready():
 	_setup_overlay()
+	
+	# 新增：初始化订单层
+	_order_layer = OrderOverlay.new()
+	_order_layer.name = "OrderOverlay"
+	add_child(_order_layer)
+	_order_layer.setup(self) # 把自己传过去
+	
 	_generate_test_data()
 	_end_index = _all_candles.size() - 1
 
@@ -87,6 +96,10 @@ func _draw():
 		var rect_height = abs(y_close - y_open)
 		if rect_height < 1.0: rect_height = 1.0 
 		draw_rect(Rect2(x_pos, rect_top, candle_width, rect_height), color)
+	
+	# 每次 Chart 重绘时(比如拖拽、缩放、新K线)，通知 OrderLayer 也跟着对齐重绘
+	if _order_layer:
+		_order_layer.queue_redraw()
 
 func _gui_input(event):
 	# 1. 鼠标按键事件
@@ -296,3 +309,15 @@ func _generate_test_data():
 		var l = min(o, c) - randf_range(0.0, 1.0)
 		_all_candles.append({"t": str(i), "o": o, "h": h, "l": l, "c": c})
 		price = c
+
+# --- 对外公开接口 ---
+
+# OrderOverlay 会调用这个方法来确定线画在哪里
+func map_price_to_y_public(price: float) -> float:
+	# 直接复用内部逻辑
+	return _map_price_to_y(price)
+
+# 更新订单可视化
+func update_visual_orders(orders: Array[OrderData]):
+	if _order_layer:
+		_order_layer.update_orders(orders)
