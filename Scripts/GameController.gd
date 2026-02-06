@@ -51,7 +51,7 @@ var is_playing: bool = false
 var _cached_last_candle: Dictionary = {} # 缓存当前K线，防止空数据
 
 # 修改: 增加 tick 间隔控制
-var tick_delay: float = 0.1 # 每个微 Tick 之间的间隔 (秒)
+var tick_delay: float = 0.05 # 每个微 Tick 之间的间隔 (秒)
 
 func _ready():
 	print("正在初始化控制器...")
@@ -366,113 +366,104 @@ func _play_trade_sound():
 # [重写] 模拟自然波动 K 线 (Perlin Noise + Path Interpolation)
 func _simulate_candle_ticks(final_data: Dictionary):
 	var t_str = final_data.t
-	var o = final_data.o
-	var h = final_data.h
-	var l = final_data.l
-	var c = final_data.c
-	
-	# 1. 确定波动路径 (Path Planning)
-	# 真实市场往往先去测试反方向，再走主趋势
-	# 简单逻辑：
-	# 如果是阳线 (C >= O): 路径通常是 Open -> Low -> High -> Close
-	# 如果是阴线 (C < O):  路径通常是 Open -> High -> Low -> Close
-	# (当然这只是大概率，为了模拟器简单点先定死路径)
-	
-	var path_points = []
-	path_points.append(o)
-	
-	if c >= o:
-		# 阳线：先砸盘(Low)，再拉升(High)，最后收盘
-		if abs(l - o) > 0.00001: path_points.append(l)
-		if abs(h - l) > 0.00001: path_points.append(h)
-	else:
-		# 阴线：先诱多(High)，再砸盘(Low)，最后收盘
-		if abs(h - o) > 0.00001: path_points.append(h)
-		if abs(l - h) > 0.00001: path_points.append(l)
-		
-	path_points.append(c)
-	
-	# 2. 也是初始化临时 Candle
-	var temp_candle = {
+	var o = final_data.o # Open (固定)
+	var c_final = final_data.c # Final Close (目标)
+	var h_final = final_data.h # Final High (目标)
+	var l_final = final_data.l # Final Low (目标)
+
+	# 1. 初始化 "胚胎" K 线
+	# 刚出生时，O=H=L=C，就是一条横线
+	var current_sim_candle = {
 		"t": t_str,
 		"o": o,
 		"h": o, 
 		"l": o, 
 		"c": o  
 	}
-	
-	# 3. 分配时间片
-	# 假设每根 K 线我们模拟 60 次跳动 (Tick)，让动画更平滑
-	var total_ticks = 60 
-	# 倒计时逻辑：模拟 60秒 / total_ticks = 每跳代表的秒数
-	var fake_seconds_per_tick = 60.0 / float(total_ticks)
 
-	# 强制图表滚动到最右边，确保看得到当前 K 线
-	chart.scroll_to_end()
-	
-	# 4. 开始遍历路径点
-	var points_count = path_points.size()
-	if points_count < 2: 
-		_process_tick(temp_candle, c, 0)
-		return
+	# 2. 也是先强制推送到图表，让原本的上一根结束，新的这一根开始
+	# 这一步至关重要，用户会看到一个新的 Dash 出现
+	_process_tick(current_sim_candle, o, 60)
 
-	# 我们把 total_ticks 分配给 path 的每一段
-	# 例如 O->L, L->H, H->C 是 3 段, 每段分配 total_ticks / 3
-	var segments = points_count - 1
-	var ticks_per_segment = int(total_ticks / segments)
-	
-	var current_tick_idx = 0
-	
-	for i in range(segments):
-		var p_start = path_points[i]
-		var p_end = path_points[i+1]
+	# 3. 规划路径 (Path Planning) - 让走势更曲折
+	# 这里的路径是“趋势锚点”，我们会用噪声在锚点间游走
+	var anchors = []
+	anchors.append(o)
+
+	# 简单的逻辑：根据最终涨跌决定先去哪
+	# 为了更加真实，我们增加中间插值点，不要直奔 High/Low
+	if c_final >= o:
+		# 预期是阳线：O -> (震荡) -> L_final -> (拉升) -> H_final -> (回落) -> C_final
+		anchors.append(lerp(o, l_final, 0.6)) # 还没到最低，先试探
+		anchors.append(l_final)               # 到达最低
+		anchors.append(lerp(l_final, h_final, 0.3)) # 反弹
+		anchors.append(lerp(l_final, h_final, 0.8)) # 继续拉
+		anchors.append(h_final)               # 到达最高
+	else:
+		# 预期是阴线
+		anchors.append(lerp(o, h_final, 0.6)) 
+		anchors.append(h_final)
+		anchors.append(lerp(h_final, l_final, 0.3))
+
+	anchors.append(c_final) # 最后必须回到终点
+
+	# 4. 执行模拟循环
+	var total_steps = 60 # 60帧动画
+	var steps_per_segment = int(total_steps / (anchors.size() - 1))
+	if steps_per_segment < 1: steps_per_segment = 1
+
+	var tick_counter = 0
+
+	# 遍历每一段路径
+	for i in range(anchors.size() - 1):
+		var p_start = anchors[i]
+		var p_end = anchors[i+1]
 		
-		for j in range(ticks_per_segment):
+		for step in range(steps_per_segment):
 			if not is_playing: return
+			tick_counter += 1
 			
-			current_tick_idx += 1
-			# 进度 t (0.0 to 1.0)
-			var t = float(j) / float(ticks_per_segment)
+			# 插值进度 0.0 -> 1.0
+			var t = float(step) / float(steps_per_segment)
 			
-			# A. 线性插值 (趋势)
-			var linear_p = lerp(p_start, p_end, t)
+			# A. 基础移动 (线性)
+			var base_price = lerp(p_start, p_end, t)
 			
-			# B. 叠加噪声 (波动)
-			_noise_offset += 0.05
-			var n_val = _noise.get_noise_1d(_noise_offset * 100.0) # -1 to 1
+			# B. 叠加噪声 (让价格上下抖动)
+			_noise_offset += 0.2
+			var n = _noise.get_noise_1d(_noise_offset * 100.0) # -1 ~ 1
+			# 咱们让价格在趋势线上有 +/- 10% 的段落价差抖动
+			var noise_amp = abs(p_end - p_start) * 0.2 
+			if noise_amp < 0.00005: noise_amp = 0.00005 # 最小抖动
 			
-			# 动态噪声强度：两头小，中间大 (两头必须准确对齐 O/H/L/C)
-			# 使用 sin(t * PI) 实现 0 -> 1 -> 0 的抛物线强度
-			var vol_scale = 0.0 # 波动幅度
-			# 计算这段距离的价差，作为波动基准
-			var seg_diff = abs(p_end - p_start)
-			vol_scale = seg_diff * 0.5 * sin(t * PI) 
+			var current_price = base_price + (n * noise_amp)
 			
-			var noisy_price = linear_p + (n_val * vol_scale)
+			# [核心] 更新当前 K 线的 High/Low
+			# 注意：我们是根据“当前生成的 current_price”来推导 H/L，而不是用 final_data
+			# 这样 K 线才会“长”出来
+			current_sim_candle.c = current_price
+			if current_price > current_sim_candle.h: current_sim_candle.h = current_price
+			if current_price < current_sim_candle.l: current_sim_candle.l = current_price
 			
-			# 根据 noisy_price 更新 H/L
-			temp_candle.c = noisy_price
-			if noisy_price > temp_candle.h: temp_candle.h = noisy_price
-			if noisy_price < temp_candle.l: temp_candle.l = noisy_price
+			# 计算倒计时 (60秒倒数)
+			var secs = int(60 - tick_counter)
+			if secs < 0: secs = 0
 			
-			# 计算倒计时 (假定每分钟 60 秒)
-			var secs_remain = int(60 - (current_tick_idx * fake_seconds_per_tick))
-			if secs_remain < 0: secs_remain = 0
+			# 提交更新
+			_process_tick(current_sim_candle, current_price, secs)
 			
-			# 提交
-			_process_tick(temp_candle, noisy_price, secs_remain)
-			
-			# 等待
+			# 稍作等待
 			await get_tree().create_timer(tick_delay).timeout
-	
-	# 5. 最后修正 (确保 Close 价绝对准确)
-	temp_candle.c = c
-	temp_candle.h = h # 确保历史最高最低是对的
-	temp_candle.l = l
-	_process_tick(temp_candle, c, 0)
-	
-	# 更新缓存
-	_cached_last_candle = final_data 
+
+	# 5. [最后定格] 强制设置为最终完美数据
+	# 防止因为噪声导致最终收盘价有微小偏差
+	final_data.c = c_final # 确保 Close 归位
+	# 注意：如果模拟过程中的噪声让 H 超过了 H_final，我们得认（因为那是真实发生的模拟）
+	# 但为了数据一致性，通常我们直接用 final_data 覆盖
+	_process_tick(final_data, c_final, 0)
+
+	# 缓存更新
+	_cached_last_candle = final_data
 
 # [修改] 参数增加 seconds_left
 func _process_tick(candle_state: Dictionary, current_price: float, seconds_left: int):

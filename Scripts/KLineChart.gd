@@ -320,14 +320,28 @@ func _map_price_to_y(price: float) -> float:
 func _calculate_price_bounds(start_idx: int, end_idx: int):
 	var min_p = 99999999.0
 	var max_p = -99999999.0
-	for i in range(start_idx, end_idx + 1):
-		if i >= _all_candles.size(): break
+
+	# 1. 遍历可见范围内的所有 K 线（end_idx 必须包含正在生成的最后一根）
+	var scan_end = min(end_idx, _all_candles.size() - 1)
+	for i in range(start_idx, scan_end + 1):
 		var c = _all_candles[i]
 		if c.l < min_p: min_p = c.l
 		if c.h > max_p: max_p = c.h
-	_min_visible_price = min_p
-	_max_visible_price = max_p
-	_price_range = max_p - min_p
+
+	# 防呆：没有数据时给出默认范围
+	if min_p > max_p:
+		min_p = 0.0
+		max_p = 1.0
+
+	# 关键优化：动态扩展边界（Padding）
+	var range_diff = max_p - min_p
+	if range_diff == 0: range_diff = 0.0001
+
+	var padding = range_diff * 0.1 # 上下各留 10%
+
+	_min_visible_price = min_p - padding
+	_max_visible_price = max_p + padding
+	_price_range = _max_visible_price - _min_visible_price
 
 func _zoom_chart(factor: float):
 	candle_width *= factor
@@ -369,22 +383,31 @@ func update_current_price(price: float, seconds_left: int = 0):
 func update_last_candle(data: Dictionary):
 	if _all_candles.is_empty(): return
 
-	# 1. 更新数据
-	_all_candles[_all_candles.size() - 1] = data
+	# 1. 更新数据源
+	var last_idx = _all_candles.size() - 1
+	_all_candles[last_idx] = data
 
-	# 2. 关键修复：因为 High/Low 变了，必须重新计算Y轴缩放范围，
-	# 否则新长出来的 K 线可能超出屏幕或看起来是扁的
-	# 我们获取当前可见范围的索引进行重算
-	var vis_count = ceili(size.x / (candle_width + spacing))
+	# 2. [关键] 强制重新计算视野
+	# 必须重新扫描当前屏幕，因为这根 K 线可能刚刚创了新高，撑大了 Y 轴
+	var chart_width = size.x
+	var candle_full_width = candle_width + spacing
+	var vis_count = ceili(chart_width / candle_full_width)
 	var start_idx = max(0, _end_index - vis_count)
+
+	# 重算边界 (这将触发 Y 轴缩放)
 	_calculate_price_bounds(start_idx, _end_index)
 
-	# 3. 强制重绘
+	# 3. 绘制
 	queue_redraw()
 
-	# 4. 通知所有图层刷新
+	# 4. 联动更新其他层
 	if _order_layer: _order_layer.queue_redraw()
 	if _current_price_layer: _current_price_layer.queue_redraw()
+	# 把最新的价格和 K 线 X 坐标发给现价线
+	if _current_price_layer:
+		# 这里假设 update_last_candle 使用时，外部会同步调用 update_current_price
+		# 所以这里只要让它重绘就行
+		pass
 
 func jump_to_index(idx: int):
 	_end_index = idx
