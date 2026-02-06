@@ -33,6 +33,9 @@ var sfx_player: AudioStreamPlayer
 # [NEW] 订单修改确认弹窗
 var confirm_dialog: ModifyConfirmDialog
 
+# [NEW] 平仓弹窗引用
+var close_dialog: CloseOrderDialog
+
 # --- 核心数据 ---
 var full_history_data: Array = [] 
 var current_playback_index: int = 0 
@@ -54,6 +57,23 @@ func _ready():
 	# [新增] 初始化确认弹窗
 	confirm_dialog = ModifyConfirmDialog.new()
 	add_child(confirm_dialog)
+	
+	# [新增] 初始化平仓弹窗
+	close_dialog = CloseOrderDialog.new()
+	add_child(close_dialog)
+	
+	# 连接平仓确认信号 -> 执行平仓
+	close_dialog.request_close_order.connect(func(order):
+		# 获取当前价格 (用于记录平仓价)
+		var price = 0.0
+		var time_str = ""
+		if not _cached_last_candle.is_empty():
+			price = _cached_last_candle.c
+			time_str = _cached_last_candle.t
+		
+		# 调用账户接口执行平仓
+		account.close_market_order(order.ticket_id, price, time_str)
+	)
 	
 	# 1. 初始化账户系统
 	account = AccountManager.new()
@@ -110,6 +130,16 @@ func _ready():
 	# 5. 初始化终端面板
 	if terminal:
 		terminal.setup(account)
+		# 连接双击事件
+		terminal.order_double_clicked.connect(func(order):
+			# 获取当前价格用于展示
+			var cur_price = 0.0
+			if not _cached_last_candle.is_empty():
+				cur_price = _cached_last_candle.c
+				
+			# 弹出窗口
+			close_dialog.popup_order(order, cur_price)
+		)
 	else:
 		printerr("警告：未找到 TerminalPanel 节点")
 

@@ -1,6 +1,10 @@
 class_name TerminalPanel
 extends PanelContainer
 
+# --- 信号 ---
+# 当用户双击订单行时发出
+signal order_double_clicked(order: OrderData)
+
 # --- 节点引用 ---
 @onready var trade_tree: Tree = %TradeTree
 @onready var history_tree: Tree = %HistoryTree
@@ -16,6 +20,10 @@ enum HistCol { TICKET, TIME, TYPE, LOTS, OPEN_PRICE, CLOSE_PRICE, PROFIT, MAX }
 func _ready():
 	_setup_trade_tree()
 	_setup_history_tree()
+	
+	# [新增] 连接双击信号
+	trade_tree.item_activated.connect(_on_tree_item_activated)
+	
 	log_message("终端系统初始化完成。等待数据...")
 
 # --- 初始化表格结构 ---
@@ -117,6 +125,17 @@ func _on_equity_updated(equity: float, floating: float):
 			item.set_custom_color(TradeCol.PROFIT, color)
 			
 		item = item.get_next()
+
+# [新增] 双击回调函数
+func _on_tree_item_activated():
+	var item = trade_tree.get_selected()
+	if not item: return
+	
+	# 获取绑定的订单数据
+	var order: OrderData = item.get_metadata(0)
+	if order:
+		print("双击订单: #", order.ticket_id)
+		order_double_clicked.emit(order) # 通知控制器
 
 # --- 表格操作细节 ---
 
