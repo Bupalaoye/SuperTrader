@@ -3,7 +3,16 @@
 [ext_resource type="Script" uid="uid://bvrqqkrsakca8" path="res://Scripts/KLineChart.gd" id="1_hpc76"]
 [ext_resource type="Script" uid="uid://cqi6nn2gngrpy" path="res://Scripts/GameController.gd" id="1_tr2i4"]
 [ext_resource type="Script" uid="uid://dcaj4luvcf85b" path="res://Scripts/CrosshairOverlay.gd" id="3_nhkr4"]
+[ext_resource type="Script" uid="uid://blt5y7bcxpolv" path="res://Scripts/chart/indicators/chart_indicator.gd" id="3_y4jh7"]
 [ext_resource type="Script" uid="uid://bievwlyih27k7" path="res://Scripts/TerminalPanel.gd" id="4_7rqgy"]
+[ext_resource type="Script" uid="uid://hhbtwe5cx5ln" path="res://Scripts/chart/indicators/indicator_ema.gd" id="4_y4jh7"]
+
+[sub_resource type="Resource" id="Resource_y4jh7"]
+script = ExtResource("4_y4jh7")
+indicator_name = "EMA"
+is_visible = false
+color = Color(1, 0.6, 0.2, 1)
+metadata/_custom_type_script = "uid://hhbtwe5cx5ln"
 
 [node name="StatsStation" type="Control" unique_id=99667446]
 layout_mode = 3
@@ -37,6 +46,7 @@ layout_mode = 2
 size_flags_vertical = 3
 script = ExtResource("1_hpc76")
 candle_width = 1.0
+indicators = Array[ExtResource("3_y4jh7")]([SubResource("Resource_y4jh7")])
 
 [node name="CrosshairOverlay" type="Control" parent="VSplitContainer/KLineChart" unique_id=1113313176]
 layout_mode = 1

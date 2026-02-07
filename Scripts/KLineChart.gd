@@ -18,6 +18,9 @@ enum Mode {
 @export var wick_color: Color = Color.WHITE 
 @export var bg_color: Color = Color.hex(0x111111FF) 
 
+@export_group("Indicators")
+@export var indicators: Array[ChartIndicator] = []
+
 # --- 节点引用 ---
 var _overlay: CrosshairOverlay
 # --- 新增变量 ---
@@ -119,6 +122,28 @@ func _setup_overlay():
 	_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(_overlay)
 	_overlay.set_active(false)
+	
+	# --- 8. 初始化指标系统 ---
+	_setup_indicators()
+
+func _setup_indicators():
+	# 监听所有指标的资源变化信号
+	for ind in indicators:
+		if ind and not ind.changed.is_connected(queue_redraw):
+			ind.changed.connect(queue_redraw)
+	
+	# 计算初始数据
+	_recalculate_all_indicators()
+
+func _recalculate_all_indicators():
+	# 如果没有数据，跳过
+	if _all_candles.is_empty():
+		return
+	
+	# 通知所有指标重新计算，基于当前的 K 线数据
+	for ind in indicators:
+		if ind:
+			ind.calculate(_all_candles)
 
 func _draw():
 	# 触发网格和辅助层重绘
@@ -180,6 +205,17 @@ func _draw():
 		if rect_height < 1.0: rect_height = 1.0 
 		
 		draw_rect(Rect2(x_pos, rect_top, candle_width, rect_height), color)
+	
+	# === 绘制指标系统 ===
+	if indicators.size() > 0:
+		# 创建坐标转换函数，绑定到当前 KLineChart 实例
+		var transformer = Callable(self, "get_screen_coord_for_indicator")
+		
+		# 遍历所有指标
+		for ind in indicators:
+			if ind and ind.is_visible:
+				# 调用指标的绘制方法
+				ind.draw(self, transformer, _calculated_start_index, _end_index)
 
 func _gui_input(event):
 	# 1. 鼠标按键事件
@@ -349,6 +385,14 @@ func _map_price_to_y(price: float) -> float:
 	var render_height = size.y * 0.9
 	return padding + (1.0 - ratio) * render_height
 
+## 指标的坐标转换函数 (解耦的关键)
+## 接收 (K线索引, 价格值) -> 返回 (屏幕坐标 Vector2)
+## 这是指标系统与主图表通信的核心接口
+func get_screen_coord_for_indicator(idx: int, price: float) -> Vector2:
+	var x = get_x_by_index_public(idx)
+	var y = _map_price_to_y(price)
+	return Vector2(x, y)
+
 func _calculate_price_bounds(start_idx: int, end_idx: int):
 	var min_p = 99999999.0
 	var max_p = -99999999.0
@@ -419,6 +463,9 @@ func set_history_data(data: Array):
 
 	# 全量计算布林带（仅在加载历史时执行一次）
 	_recalculate_indicators_full()
+	
+	# === 指标系统：重新计算所有指标 ===
+	_recalculate_all_indicators()
 
 	queue_redraw()
 
@@ -704,6 +751,21 @@ func _append_indicators_incremental():
 	# 在追加新 K 线后，调用增量更新（会执行 append 或修改最后一位）
 	if not _bb_settings.active: return
 	_update_indicators_incremental()
+	
+	# === 指标系统：增量计算 ===
+	_append_indicators_incremental_new()
+
+func _append_indicators_incremental_new():
+	# 为新指标系统提供增量计算支持
+	if _all_candles.is_empty():
+		return
+	
+	var last_index = _all_candles.size() - 1
+	
+	for ind in indicators:
+		if ind:
+			# 调用指标的增量计算方法
+			ind.calculate_incremental(_all_candles, last_index)
 
 # [新增] 计算指标
 func calculate_and_add_ma(period: int, color: Color):
