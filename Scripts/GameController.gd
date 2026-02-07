@@ -754,8 +754,9 @@ func _process_tick(candle_state: Dictionary, current_price: float, seconds_left:
 	# 1. 如果是这根 K 线的第一次(Time变了)，需要 append，否则是 update
 	if _cached_last_candle.get("t") != candle_state.t:
 		chart.append_candle(candle_state.duplicate())
-		# 新 K 线生成时，强制滚屏，确保可见
-		chart.scroll_to_end()
+		# 新 K 线生成时，不再强制滚屏，遵从 chart.append_candle 中的 _auto_scroll 逻辑。
+		# 原先的 chart.scroll_to_end() 会把 _auto_scroll 强制设为 true，导致用户设置被覆盖。
+		# 已移除该强制调用以修复 Auto Scroll 被重置的问题。
 	else:
 		chart.update_last_candle(candle_state.duplicate())
 	
