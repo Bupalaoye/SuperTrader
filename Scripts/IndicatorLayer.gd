@@ -74,7 +74,7 @@ func _draw():
 
 # --- 核心修复：三青线绘制逻辑 ---
 func _draw_band_channel(ind: Dictionary, start: int, end: int):
-	# 获取数据
+	# 获取数据 (如果没有该key，返回空数组)
 	var ub = ind.data.get("ub", [])
 	var lb = ind.data.get("lb", [])
 	var mb = ind.data.get("mb", [])
@@ -86,41 +86,62 @@ func _draw_band_channel(ind: Dictionary, start: int, end: int):
 	# 线宽：默认稍微加粗一点
 	var w = ind.get("width", 1.5)
 
-	# 数据安全检查
-	if ub.is_empty(): return
+	# [BUG 修复点] 之前这里写了 if ub.is_empty(): return
+	# 导致 EMA 200 (只有 mb 没有 ub) 直接被跳过不画
+	# 现在的逻辑是：只要三个轨道里有任意一个有数据，就可以继续
+	if ub.is_empty() and lb.is_empty() and mb.is_empty():
+		return
 	
-	var max_idx = ub.size() - 1
+	# 确定绘制范围
+	# 注意：为了安全，我们要取现有数据的最大索引
+	var max_idx = 0
+	if not ub.is_empty(): max_idx = ub.size() - 1
+	elif not mb.is_empty(): max_idx = mb.size() - 1 # 如果只有 MB，以 MB 为准
+	
 	var safe_end = min(end, max_idx)
 	if safe_end <= start: return
 
-	# 直接画三根线，无需任何花哨逻辑
+	# 绘制 (判断非空才画)
 	if not ub.is_empty(): _draw_solid_line(ub, start, safe_end, line_color, w)
 	if not lb.is_empty(): _draw_solid_line(lb, start, safe_end, line_color, w)
+	# EMA 200 主要靠这行画出来：
 	if not mb.is_empty(): _draw_solid_line(mb, start, safe_end, line_color, w)
 
 # --- 通用画线函数 (Solid Line) ---
 func _draw_solid_line(data: Array, start: int, end: int, col: Color, w: float):
 	var points = PackedVector2Array()
 	
-	for i in range(start, end + 1):
-		# 安全边界检查
-		if i < 0 or i >= data.size(): continue
+	# 1. 扩宽绘制范围
+	# 前后多画 1 根，保证线段连接到屏幕外，而不是在屏幕边缘断开
+	var safe_start = start - 1
+	var safe_end = end + 1
+	
+	for i in range(safe_start, safe_end + 1):
+		# 2. 严格的边界检查
+		if i < 0 or i >= data.size(): 
+			continue
 		
 		var val = data[i]
 		
-		# 遇到无效值(NAN)，断开线条重画
+		# 3. [关键修复] 处理 NAN (无效值)
+		# 如果遇到无效数据（例如 MA(20) 的前19个点），必须断开线条
 		if is_nan(val):
 			if points.size() > 1:
-				draw_polyline(points, col, w, true)
-			points.clear()
+				draw_polyline(points, col, w, true) # 画出之前的段落
+			points.clear() # 清空点集，准备下一段
 			continue
 		
-		# 坐标转换
+		# 4. [核心] 获取坐标 - 此时 _chart 内部已经锁定了 start_index，绝对对齐
 		var x = _chart.get_x_by_index_public(i)
 		var y = _chart.map_price_to_y_public(val)
+		
+		# 5. 防御性检查：防止 Y 轴爆出离谱的值 (比如除以0导致 INF)
+		if is_inf(x) or is_nan(x) or is_inf(y) or is_nan(y):
+			continue
+			
 		points.append(Vector2(x, y))
 	
-	# 画最后一段
+	# 画最后剩余的一段
 	if points.size() > 1:
 		draw_polyline(points, col, w, true)
 
@@ -133,21 +154,32 @@ func _draw_markers(ind: Dictionary, start: int, end: int):
 	var data_map = ind.data
 	var color = ind.color
 	var is_up = ind.is_up
-	var arrow_size = 6.0
-	var offset_y = 15.0
+	
+	# 动态调整图标大小，随 K 线宽度缩放
+	var base_size = _chart.get_candle_width() * 0.4
+	var arrow_size = clamp(base_size, 3.0, 10.0) # 限制最大最小值
+	var offset_y = arrow_size * 2.5 # 偏移量也动态化
 	
 	for i in range(start, end + 1):
 		if data_map.has(i):
 			var price = data_map[i]
+			
+			# [核心] 使用统一坐标
 			var x = _chart.get_x_by_index_public(i)
 			var y = _chart.map_price_to_y_public(price)
+			
 			var points = PackedVector2Array()
+			
 			if is_up:
-				points.append(Vector2(x, y + offset_y))
+				# 底分型（向上箭头，位于 Low 下方）
+				# 顶点指向上方
+				points.append(Vector2(x, y + offset_y))           # 箭头尖
 				points.append(Vector2(x - arrow_size, y + offset_y + arrow_size * 1.5))
 				points.append(Vector2(x + arrow_size, y + offset_y + arrow_size * 1.5))
 			else:
-				points.append(Vector2(x, y - offset_y))
+				# 顶分型（向下箭头，位于 High 上方）
+				points.append(Vector2(x, y - offset_y))           # 箭头尖
 				points.append(Vector2(x - arrow_size, y - offset_y - arrow_size * 1.5))
 				points.append(Vector2(x + arrow_size, y - offset_y - arrow_size * 1.5))
+				
 			draw_colored_polygon(points, color)

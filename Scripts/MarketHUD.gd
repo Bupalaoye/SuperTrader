@@ -35,7 +35,8 @@ func _init():
 	
 	_lbl_trend = Label.new()
 	_lbl_trend.text = "TREND: WAITING..."
-	_lbl_trend.add_theme_font_size_override("font_size", 16) # 大字体
+	_lbl_trend.add_theme_font_size_override("font_size", 18) # 稍微加大
+	_lbl_trend.add_theme_constant_override("outline_size", 2) # 加描边
 	vbox.add_child(_lbl_trend)
 	
 	_lbl_stat = Label.new()
@@ -53,18 +54,29 @@ func _init():
 	vbox.add_child(_lbl_bb_info)
 
 # --- 公开接口 ---
-func update_status(trend_str: String, rsi_val: float, atr_val: float, price: float):
-	# 1. 更新趋势
-	_lbl_trend.text = "TREND: " + trend_str
-	if trend_str == "BULLISH":
-		_lbl_trend.modulate = Color.GREEN
-	elif trend_str == "BEARISH":
-		_lbl_trend.modulate = Color.RED
+# [新增] 趋势过滤函数 (专用于显示 EMA 200 比对结果)
+func update_trend_filter(price: float, ema_val: float):
+	if is_nan(ema_val) or ema_val == 0:
+		_lbl_trend.text = "TREND: WAITING DATA..."
+		_lbl_trend.modulate = Color.GRAY
+		return
+
+	var diff = price - ema_val
+	
+	# 核心逻辑：价格 > EMA = 只做多；价格 < EMA = 只做空
+	if diff > 0:
+		# 绿色 (UPTREND)
+		_lbl_trend.text = "🟢 UPTREND (ONLY BUY)\nEMA: %.5f" % ema_val
+		_lbl_trend.modulate = Color(0.2, 1.0, 0.4) # 亮绿
 	else:
-		_lbl_trend.modulate = Color.WHITE
-		
+		# 红色 (DOWNTREND)
+		_lbl_trend.text = "🔴 DOWNTREND (ONLY SELL)\nEMA: %.5f" % ema_val
+		_lbl_trend.modulate = Color(1.0, 0.3, 0.3) # 亮红
+
+# [新增] 震荡指标更新函数 (专用于 RSI 和 ATR)
+func update_status_indicators(rsi_val: float, atr_val: float):
 	# 2. 更新 RSI
-	var rsi_status = ""
+	var rsi_status = "NEUTRAL"
 	var rsi_col = Color.WHITE
 	if rsi_val > 70: 
 		rsi_status = "OVERBOUGHT"
@@ -72,16 +84,24 @@ func update_status(trend_str: String, rsi_val: float, atr_val: float, price: flo
 	elif rsi_val < 30: 
 		rsi_status = "OVERSOLD"
 		rsi_col = Color.CYAN
-	else: 
-		rsi_status = "NEUTRAL"
 	
 	_lbl_stat.text = "RSI(14): %.1f [%s]" % [rsi_val, rsi_status]
 	_lbl_stat.modulate = rsi_col
 	
-	# 3. 更新 ATR (显示点数)
-	# 假设 5 位小数报价，0.00020 就是 20 点
-	var pips = atr_val * 10000.0 # 粗略换算
+	# 3. 更新 ATR
+	var pips = atr_val * 10000.0
 	_lbl_atr.text = "ATR(14): %.5f (~%d pips)" % [atr_val, pips]
+
+# [兼容] 原有的 update_status 函数 (为了向后兼容，保留但不再使用)
+func update_status(trend_str: String, rsi_val: float, atr_val: float, price: float):
+	_lbl_trend.text = "TREND: " + trend_str
+	if trend_str == "BULLISH":
+		_lbl_trend.modulate = Color.GREEN
+	elif trend_str == "BEARISH":
+		_lbl_trend.modulate = Color.RED
+	else:
+		_lbl_trend.modulate = Color.WHITE
+	update_status_indicators(rsi_val, atr_val)
 
 # --- BB 配置信息显示 ---
 func update_bb_info(period: int, k: float):

@@ -25,7 +25,9 @@ var _order_layer: OrderOverlay
 var _drawing_layer: DrawingLayer
 var _indicator_layer: IndicatorLayer
 # 布林带配置状态 (是否启用、周期、倍数、颜色)
-var _bb_settings = { "active": false, "period": 20, "k": 2.0, "color": Color.TEAL }
+var _bb_settings = { "active": false, "period": 21, "k": 0.5, "color": Color.TEAL }
+# [核心修复] 单一真理源：屏幕最左边是哪根K线？
+var _calculated_start_index: int = 0
 # 持久化缓存，避免每帧创建大数组
 var _bb_cache: Dictionary = { "ub": [], "mb": [], "lb": [] }
 # 标记是否已经把引用传给了 IndicatorLayer
@@ -48,6 +50,11 @@ var _end_index: int = 0
 var _max_visible_price: float = 0.0
 var _min_visible_price: float = 0.0
 var _price_range: float = 1.0
+
+# --- 新增：图表右侧留白与自动滚动配置 ---
+var _max_right_buffer_bars: int = 50  # 允许向右拖出多少根空白 K 线
+var _auto_scroll: bool = true  # 是否开启自动滚动
+var _chart_shift_margin: int = 5  # 自动滚动时，右侧保留多少根空白间距
 
 # --- 交互状态 ---
 var _current_mode: Mode = Mode.NONE 
@@ -114,41 +121,48 @@ func _setup_overlay():
 	_overlay.set_active(false)
 
 func _draw():
-	# 触发网格的一起重绘
+	# 触发网格和辅助层重绘
 	if _grid_layer: _grid_layer.queue_redraw()
+	if _current_price_layer: _current_price_layer.queue_redraw()
+	if _indicator_layer: _indicator_layer.queue_redraw()
+	if _order_layer: _order_layer.queue_redraw()
 	
 	if _all_candles.is_empty():
 		return
 
 	var chart_width = size.x
 	var candle_full_width = candle_width + spacing
+	
+	# 1. [核心步骤] 统一计算可视范围，只在这里算一次！
+	# 向上取整，保证屏幕边缘能多画半根，防止穿帮
 	_visible_count = ceili(chart_width / candle_full_width)
 	
-	var start_index = max(0, _end_index - _visible_count)
+	# 计算屏幕左边缘对应的索引 (Screen Left Index)
+	# 逻辑：EndIndex 是屏幕右边缘的 K 线，往回推 VisibleCount 根
+	# +1 是为了保证 EndIndex 也是可见的
+	_calculated_start_index = _end_index - _visible_count + 1
 	
-	# [核心修复] 必须 +1 才能包含 _end_index 本身 (也就是正在活动的这根 K 线)
-	var count = _end_index - start_index + 1
-	
-	if count <= 0: return
+	# 2. 计算价格轴范围 (Y轴缩放)
+	_calculate_price_bounds(_calculated_start_index, _end_index)
 
-	_calculate_price_bounds(start_index, _end_index)
-
-	for i in range(count):
-		var data_idx = start_index + i
+	# 3. 绘制 K 线 (使用统一的坐标逻辑)
+	# 遍历屏幕上每一根可能的柱子位置 (i from 0 to _visible_count)
+	for i in range(_visible_count + 1): # 多画一根防止边缘闪烁
 		
-		# [安全防御] 防止索引越界
+		var data_idx = _calculated_start_index + i
+		
+		# [边界检查] 超出数据范围（左侧无历史，或右侧留白区域）不画
 		if data_idx < 0 or data_idx >= _all_candles.size():
 			continue
 			
 		var candle = _all_candles[data_idx]
 		
-		# 计算屏幕 X 坐标：相对于 start_index 的偏移
-		# 这里的 i 就是相对偏移量
-		var x_pos = i * candle_full_width
+		# [核心修复] 直接调用 public 接口计算 X，确保与指标层 100% 对齐
+		# 以前是 x = i * width，由偏差；现在走统一公式
+		var center_x = get_x_by_index_public(data_idx)
+		var x_pos = center_x - (candle_width / 2.0)
 		
-		# 如果你想让最新的 K 线靠右侧对齐，可以在这里做调整，
-		# 但目前逻辑是靠左填充视口，只要 _visible_count 够大，就能铺满屏幕。
-		
+		# 绘制逻辑
 		var y_open = _map_price_to_y(candle.o)
 		var y_close = _map_price_to_y(candle.c)
 		var y_high = _map_price_to_y(candle.h)
@@ -157,19 +171,15 @@ func _draw():
 		var is_bull = candle.c >= candle.o
 		var color = bull_color if is_bull else bear_color
 		
-		var center_x = x_pos + candle_width / 2
+		# 画影线
 		draw_line(Vector2(center_x, y_high), Vector2(center_x, y_low), wick_color, 1.0)
 		
+		# 画实体
 		var rect_top = min(y_open, y_close)
 		var rect_height = abs(y_close - y_open)
-		# 哪怕开盘价=收盘价，也画 1像素的高度，保证能看到横线
 		if rect_height < 1.0: rect_height = 1.0 
 		
 		draw_rect(Rect2(x_pos, rect_top, candle_width, rect_height), color)
-	
-	# 每次 Chart 重绘时，通知子图层
-	if _order_layer: _order_layer.queue_redraw()
-	if _indicator_layer: _indicator_layer.queue_redraw()
 
 func _gui_input(event):
 	# 1. 鼠标按键事件
@@ -320,6 +330,12 @@ func _stop_drag():
 
 func _process_drag(mouse_x: float):
 	var delta_x = mouse_x - _drag_start_x
+	
+	# 稍微加个阈值，别让轻微抖动就触发
+	if abs(delta_x) > 2.0:
+		# 既然用户在手动拖拽，暂时禁用自动滚动
+		_auto_scroll = false
+	
 	var candle_full_width = candle_width + spacing
 	var move_count = int(delta_x / candle_full_width)
 	_end_index = _drag_start_index - move_count
@@ -336,28 +352,36 @@ func _map_price_to_y(price: float) -> float:
 func _calculate_price_bounds(start_idx: int, end_idx: int):
 	var min_p = 99999999.0
 	var max_p = -99999999.0
+	var has_data = false
 
-	# 1. 遍历可见范围内的所有 K 线（end_idx 必须包含正在生成的最后一根）
-	var scan_end = min(end_idx, _all_candles.size() - 1)
-	for i in range(start_idx, scan_end + 1):
-		var c = _all_candles[i]
-		if c.l < min_p: min_p = c.l
-		if c.h > max_p: max_p = c.h
+	# 只遍历真实存在的数据 range
+	var real_start = max(0, start_idx)
+	var real_end = min(end_idx, _all_candles.size() - 1)
+	
+	if real_start <= real_end:
+		for i in range(real_start, real_end + 1):
+			var c = _all_candles[i]
+			if c.l < min_p: min_p = c.l
+			if c.h > max_p: max_p = c.h
+			has_data = true
 
-	# 防呆：没有数据时给出默认范围
-	if min_p > max_p:
-		min_p = 0.0
-		max_p = 1.0
+	if not has_data:
+		# 如果视口全是空的(比如拖太远了)，就用上一次的范围或者默认值
+		if _min_visible_price == 0 and _max_visible_price == 0:
+			min_p = 0.0; max_p = 1.0
+		else:
+			return # 保持现有范围不变
 
-	# 关键优化：动态扩展边界（Padding）
-	var range_diff = max_p - min_p
-	if range_diff == 0: range_diff = 0.0001
+	if has_data:
+		# 关键优化：动态扩展边界（Padding）
+		var range_diff = max_p - min_p
+		if range_diff == 0: range_diff = 0.0001
 
-	var padding = range_diff * 0.1 # 上下各留 10%
+		var padding = range_diff * 0.1 # 上下各留 10%
 
-	_min_visible_price = min_p - padding
-	_max_visible_price = max_p + padding
-	_price_range = _max_visible_price - _min_visible_price
+		_min_visible_price = min_p - padding
+		_max_visible_price = max_p + padding
+		_price_range = _max_visible_price - _min_visible_price
 
 func _zoom_chart(factor: float):
 	candle_width *= factor
@@ -365,7 +389,18 @@ func _zoom_chart(factor: float):
 	queue_redraw()
 
 func _clamp_view():
-	_end_index = clamp(_end_index, 0, _all_candles.size() - 1)
+	if _all_candles.is_empty():
+		_end_index = 0
+		return
+	
+	var max_idx = _all_candles.size() - 1
+	
+	# [关键修改] 允许视图向右超出数据范围 (制造右侧空白)
+	# 最小不能小于 0
+	# 最大允许：数据尽头 + 我们允许的缓冲空地
+	var absolute_max = max_idx + _max_right_buffer_bars
+	
+	_end_index = clamp(_end_index, 0, absolute_max)
 
 func set_history_data(data: Array):
 	_all_candles = data
@@ -393,16 +428,17 @@ func append_candle(data: Dictionary):
 	# [新增] 更新缓存
 	_time_to_index_cache[data.t] = _all_candles.size() - 1
 	
-	if _end_index == _all_candles.size() - 2:
-		_end_index += 1
-
 	# 同步 closes 缓存（零拷贝追加）
 	_closes_cache.append(data.c)
 
 	# 新增：新 K 线生成后进行增量追加计算
 	_append_indicators_incremental()
-
-	queue_redraw()
+	
+	# [核心修改] 自动滚动逻辑
+	if _auto_scroll:
+		_snap_to_latest()
+	else:
+		queue_redraw()
 
 # [新增] 更新现价线 (支持倒计时)
 func update_current_price(price: float, seconds_left: int = 0):
@@ -440,10 +476,13 @@ func update_last_candle(data: Dictionary):
 	# 3. 在重绘前，进行增量更新（只计算最后一个点）
 	_update_indicators_incremental()
 
-	# 4. 绘制
-	queue_redraw()
+	# 4. 处理自动滚动
+	if _auto_scroll:
+		_snap_to_latest()
+	else:
+		queue_redraw()
 
-	# 4. 联动更新其他层
+	# 5. 联动更新其他层
 	if _order_layer: _order_layer.queue_redraw()
 	if _current_price_layer: _current_price_layer.queue_redraw()
 	# 把最新的价格和 K 线 X 坐标发给现价线
@@ -452,10 +491,52 @@ func update_last_candle(data: Dictionary):
 		# 所以这里只要让它重绘就行
 		pass
 
+# --- 新增: 辅助逻辑 _snap_to_latest (吸附到最新K线并留白) ---
+func _snap_to_latest():
+	if _all_candles.is_empty(): return
+	
+	# 计算目标索引：最新K线索引 + 留白数量
+	# 比如有 100 根线，允许留白 5 根，目标 end_index 就是 104
+	# 这样第 99 根线（最新）就会显示在屏幕靠右的位置，右边空出 5 格
+	var target_end = (_all_candles.size() - 1) + _chart_shift_margin
+	
+	_end_index = target_end
+	_clamp_view() # 确保不超出 _max_right_buffer_bars 的限制
+	queue_redraw()
+
+# --- 修改: 强制视图滚动到最右侧 ---
+# [修复] 确保全文件只有这一个 scroll_to_end 函数
+func scroll_to_end():
+	# 既然用户强制请求滚动到底部，我们默认开启自动滚动
+	_auto_scroll = true
+	_snap_to_latest()
+
+# --- 跳转到指定索引 (用于回放/历史查看) ---
 func jump_to_index(idx: int):
+	# 跳转意味着用户在手动操作，暂时关闭自动滚动
+	_auto_scroll = false 
 	_end_index = idx
 	_clamp_view()
 	queue_redraw()
+
+# --- [新增接口] 供 Controller 控制 Auto Scroll ---
+func set_auto_scroll(enabled: bool):
+	_auto_scroll = enabled
+	if enabled:
+		_snap_to_latest()
+
+# --- [新增接口] 供 Controller 控制 Chart Shift (留白) ---
+func toggle_chart_shift(enabled: bool):
+	# 简单的逻辑：如果开启 Shift，就留 5 根空位，否则留 0 根
+	# 你可以根据喜好调整这个数字 5 => 10 或者更多
+	_chart_shift_margin = 10 if enabled else 0
+	
+	# 如果当前正在自动滚动，立即应用留白
+	if _auto_scroll:
+		_snap_to_latest()
+	else:
+		# 如果没滚动，只刷新界面，等下次从自动滚动触发时生效，或者手动拖拽
+		queue_redraw()
 
 func _generate_test_data():
 	var price = 1.10000 # 模拟欧元兑美元价格
@@ -527,11 +608,6 @@ func get_price_at_y(y: float) -> float:
 # [辅助] 暴露当前的 candle width 以便计算点击容差
 func get_candle_width() -> float:
 	return candle_width + spacing
-
-# [新增公开接口] 只要能拿到 chart 就能开始画线
-func start_drawing(tool_name: String):
-	if _drawing_layer:
-		_drawing_layer.start_tool(tool_name)
 
 
 # -------------------------
@@ -629,19 +705,37 @@ func calculate_and_add_ma(period: int, color: Color):
 		# [修复] 改为调用具体的 add_line_indicator
 		_indicator_layer.add_line_indicator(ma_data, color, 1.5)
 
+# [新增] 专门用于绘制趋势过滤线 (EMA 200)
+# data: float 数组 (与 K 线数量对应)
+# color: 线的颜色
+func add_trend_line_data(data: Array, color: Color = Color.ORANGE, width: float = 2.0):
+	if _indicator_layer:
+		# 使用 Key 机制，确保多次调用（如重置时）能覆盖旧的，而不是一直叠加
+		# 我们复用 IndicatorLayer 的 update_band_indicator 逻辑
+		# 这里 trick 是利用 Band 指标的 'mb' (中轨) 来画单线，
+		# update_band_indicator 支持 key 替换，这样就不会重复添加线条了
+		
+		_indicator_layer.update_band_indicator("TREND_EMA_200", {"mb": data}, color, width)
+		print(">> 图表已加载趋势过滤器 (EMA 200)")
+
 # [新增] 图层需要的辅助查询接口
-func get_first_visible_index() -> int:
-	var vis_count = ceili(size.x / (candle_width + spacing))
-	return max(0, _end_index - vis_count)
-
-func get_last_visible_index() -> int:
-	return _end_index
-
+# [核心修复] 所有外部图层询问 "第 N 根 K 线在哪里" 时，必须依据 _calculated_start_index
 func get_x_by_index_public(idx: int) -> float:
 	var candle_full_width = candle_width + spacing
-	var start_idx = get_first_visible_index()
-	var relative = idx - start_idx
-	return relative * candle_full_width + candle_width / 2.0
+	
+	# 相对位置 = 目标索引 - 屏幕最左索引
+	var relative_idx = idx - _calculated_start_index
+	
+	# 屏幕 X = 相对位置 * 宽度 + 半宽偏移 (因为我们要的是中心点)
+	return (relative_idx * candle_full_width) + (candle_width / 2.0)
+
+# [核心修复] 获取屏幕最左侧索引
+func get_first_visible_index() -> int:
+	return _calculated_start_index
+
+# [核心修复] 获取屏幕最右侧索引
+func get_last_visible_index() -> int:
+	return _end_index
 
 # --- 网格层使用的接口 ---
 
@@ -665,13 +759,6 @@ func get_last_candle_visual_x() -> float:
 	# 最后一根数据的索引
 	var last_data_idx = _all_candles.size() - 1
 	return get_x_by_index_public(last_data_idx)
-
-# --- 新增: 强制视图滚动到最右侧 (确保用户能看到正在生成的 K 线)
-func scroll_to_end():
-	_end_index = _all_candles.size() - 1
-	_clamp_view() # 确保不越界
-	queue_redraw()
-
 
 # [新增] 计算并添加布林带
 func calculate_and_add_bollinger(period: int = 20, multiplier: float = 2.0, color: Color = Color.CYAN):

@@ -44,8 +44,8 @@ var order_window_overlay: Control
 var hud_display: MarketHUD
 
 # --- 布林带配置参数 ---
-var _bb_period: int = 20     # 默认周期
-var _bb_k: float = 2.0       # 默认倍数 (标准差)
+var _bb_period: int = 21     # 默认周期
+var _bb_k: float = 0.5       # 默认倍数 (标准差)
 var _bb_config_dialog: ConfirmationDialog
 var _spin_period: SpinBox
 var _spin_k: SpinBox
@@ -59,6 +59,7 @@ var full_history_data: Array = []
 var current_playback_index: int = 0 
 var is_playing: bool = false
 var _cached_last_candle: Dictionary = {} # 缓存当前K线，防止空数据
+var _history_ema200: Array = [] # [新增] 存储全量 EMA 数据
 
 # 修改: 增加 tick 间隔控制
 var tick_delay: float = 0.05 # 每个微 Tick 之间的间隔 (秒)
@@ -133,6 +134,9 @@ func _ready():
 
 	# 3. 连接 UI 交互信号
 	_setup_ui_signals()
+	
+	# [新增] 设置图表控制按钮
+	_setup_chart_controls()
 	
 	# [修改] 连接订单层的弹窗信号，而不是直接修改订单
 	var order_layer = chart.get_node("OrderOverlay")
@@ -211,11 +215,11 @@ func _ready():
 	hud_display.position = Vector2(20, 20) # 留点边距
 
 	# --- 初始化 实时布林带 ---
-	# 参数：开启=True, 周期=20, 倍数=2.0, 颜色=青色(CYAN)
+	# 参数：开启=True, 周期=变量, 倍数=变量, 颜色=青色(CYAN)
 	if chart:
-		# 强制参数: 开启, 周期20, 倍数2, 颜色青色(Cyan)
-		chart.set_bollinger_visible(true, 20, 2.0, Color.CYAN)
-		print(">> 系统强制指令: 三青线布林带已激活 (Color=CYAN) <<")
+		# 使用变量 _bb_period 和 _bb_k，而不是写死 20 和 2.0
+		chart.set_bollinger_visible(true, _bb_period, _bb_k, Color.CYAN)
+		print(">> 系统初始化: 布林带已激活 (Period=%d, K=%.2f)" % [_bb_period, _bb_k])
 	else:
 		print(">> 错误: 未找到 KLineChart 节点 <<")
 	
@@ -269,6 +273,38 @@ func _setup_ui_signals():
 			# 同时添加分型
 			chart.calculate_and_add_fractals()
 		)
+
+# [新增] 图表控制按钮设置
+func _setup_chart_controls():
+	# 创建容器放在右上角
+	var hbox = HBoxContainer.new()
+	hbox.position = Vector2(250, 60)  # 放在工具栏旁边
+	hbox.add_theme_constant_override("separation", 10)
+	chart.add_child(hbox)
+	
+	# 1. Auto Scroll 开关
+	var btn_auto = CheckButton.new()
+	btn_auto.text = "Auto"
+	btn_auto.button_pressed = true  # 默认开启
+	btn_auto.focus_mode = Control.FOCUS_NONE
+	hbox.add_child(btn_auto)
+	
+	btn_auto.toggled.connect(func(on):
+		print("Auto Scroll:", "ON" if on else "OFF")
+		chart.set_auto_scroll(on)
+	)
+	
+	# 2. Chart Shift 开关 (留白)
+	var btn_shift = CheckButton.new()
+	btn_shift.text = "Shift"
+	btn_shift.button_pressed = true  # 默认开启留白
+	btn_shift.focus_mode = Control.FOCUS_NONE
+	hbox.add_child(btn_shift)
+	
+	btn_shift.toggled.connect(func(on):
+		print("Chart Shift:", "ON" if on else "OFF")
+		chart.toggle_chart_shift(on)
+	)
 
 # [修复版] 动态构建回放进度条 UI (使用 CanvasLayer 确保可见性)
 func _setup_playback_controls():
@@ -518,6 +554,19 @@ func _on_file_selected(path: String):
 		_playback_slider.max_value = full_history_data.size() - 1
 		_playback_slider.set_value_no_signal(current_playback_index)
 
+	# === [新增开始] 计算 EMA 200 趋势线 ===
+	print(">> 正在计算 EMA 200 趋势过滤器...")
+	var closes = []
+	for candle in full_history_data:
+		closes.append(candle.c)
+		
+	# 计算全量数据
+	_history_ema200 = IndicatorCalculator.calculate_ema(closes, 200)
+	
+	# 立即绘制到图表上 (橙色，线宽 2.0)
+	chart.add_trend_line_data(_history_ema200, Color.ORANGE, 2.0)
+	# === [新增结束] ===
+
 func _toggle_play():
 	if full_history_data.is_empty(): return
 	is_playing = !is_playing
@@ -730,61 +779,64 @@ func _process_tick(candle_state: Dictionary, current_price: float, seconds_left:
 	# [新增] 每一跳都分析一次市场结构
 	_analyze_market_structure()
 
-# [新增] 核心策略分析器
+# [新增] 核心策略分析器 (修改版：使用预计算的 EMA)
 func _analyze_market_structure():
 	if full_history_data.is_empty(): return
 	
-	# 这里的 current_playback_index 指向的是"下一根还未出现"的K线索引，
-	# 所以当前最新的是 index - 1 (如果正在播放中)
-	# 但由于我们的数据结构是先把所有数据放到 full_history，然后 mask...
-	# 最好的方式是直接拿 chart 里正在展示的数据。
+	# 获取当前 K 线索引
+	# 注意：current_playback_index 指向的是"即将"发生的 K 线
+	# 在播放中，我们实际上是在模拟 current_playback_index 这一根的生成
+	# 所以要获取当前的 EMA 值，就用这个索引
+	var idx = current_playback_index
 	
-	# 为了简单且高性能，我们直接复用 full_history_data 
-	# 并且通过 playback_index 截断。
+	# 边界检查
+	var current_ema = NAN
+	if idx >= 0 and idx < _history_ema200.size():
+		current_ema = _history_ema200[idx]
+	
+	# 获取当前实时价格 (来自缓存的最新一跳价格)
+	var current_price = 0.0
+	if not _cached_last_candle.is_empty():
+		current_price = _cached_last_candle.c
+	
+	# === 更新 HUD (趋势过滤器) ===
+	if hud_display:
+		hud_display.update_trend_filter(current_price, current_ema)
+		
+		# 同时更新 RSI 和 ATR (保留原来的部分逻辑)
+		# 为了性能，这里可以简化，不再重复切片计算 EMA
+		# 只需要计算 RSI/ATR
+		_update_oscillators_for_hud(idx)
+
+# [新增辅助] 提取原本的震荡指标计算逻辑，保持代码整洁
+func _update_oscillators_for_hud(end_idx: int):
+	if full_history_data.is_empty(): return
+	if end_idx < 14: return # 数据太少
 	
 	# 1. 准备实时数据窗口 (最近 200 根足矣)
-	var end_idx = current_playback_index
-	if end_idx < 200: return # 数据太少，不算
-	
-	# 提取 Close 价格数组
-	# 优化：不需要每次都重新遍历整个几万条历史，只取最近的
 	var lookback = 250 
 	var start_idx = max(0, end_idx - lookback)
 	var slice_data = [] # KLine Dict Array
 	var slice_closes = [] # Float Array for Math
 	
-	for i in range(start_idx, end_idx): # 注意：end_idx 是开区间，刚好包住 current
+	for i in range(start_idx, end_idx + 1): # 包含 end_idx 本身
+		if i >= full_history_data.size(): break
 		var candle = full_history_data[i]
 		slice_data.append(candle)
 		slice_closes.append(candle.c)
+	
+	if slice_closes.is_empty(): return
 		
-	# 2. 计算指标
-	# A. EMA 200
-	var ema200_arr = IndicatorCalculator.calculate_ema(slice_closes, 200)
-	var current_ema = ema200_arr.back() # 拿最后一个值
-	
-	# B. RSI 14
+	# 2. 计算 RSI 14 和 ATR 14
 	var rsi_arr = IndicatorCalculator.calculate_rsi(slice_closes, 14)
-	var current_rsi = rsi_arr.back()
+	var current_rsi = rsi_arr.back() if not rsi_arr.is_empty() else NAN
 	
-	# C. ATR 14
-	# 注意 ATR 需要 High/Low/Close 结构，不能只传 closes
 	var atr_arr = IndicatorCalculator.calculate_atr(slice_data, 14)
-	var current_atr = atr_arr.back()
+	var current_atr = atr_arr.back() if not atr_arr.is_empty() else NAN
 	
-	# 3. 综合判断
-	var price = slice_closes.back()
-	var trend_state = "SIDEWAYS"
-	
-	if not is_nan(current_ema):
-		if price > current_ema:
-			trend_state = "BULLISH"
-		else:
-			trend_state = "BEARISH"
-			
-	# 4. 更新 HUD
+	# 3. 更新 HUD 的 RSI/ATR 显示
 	if hud_display:
-		hud_display.update_status(trend_state, current_rsi, current_atr, price)
+		hud_display.update_status_indicators(current_rsi, current_atr)
 
 
 # --- 布林带配置 UI 相关函数 ---
