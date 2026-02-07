@@ -56,6 +56,12 @@ var _cached_last_candle: Dictionary = {} # 缓存当前K线，防止空数据
 # 修改: 增加 tick 间隔控制
 var tick_delay: float = 0.05 # 每个微 Tick 之间的间隔 (秒)
 
+# --- 回放跳转控制 ---
+var _playback_slider: HSlider
+var _playback_label: Label
+var _is_dragging_slider: bool = false # 标记用户是否正在拖拽
+var _current_tick_generation: int = 0  # [关键] 异步任务的代数ID，用于中断旧的协程
+
 func _ready():
 	print("正在初始化控制器...")
 	
@@ -205,8 +211,9 @@ func _ready():
 		print(">> 系统强制指令: 三青线布林带已激活 (Color=CYAN) <<")
 	else:
 		print(">> 错误: 未找到 KLineChart 节点 <<")
+	# [新增] 初始化跳转控制条（放在 _ready 末尾）
+	_setup_playback_controls()
 
-	
 
 func _setup_ui_signals():
 	# 文件与回放
@@ -248,6 +255,148 @@ func _setup_ui_signals():
 			# 同时添加分型
 			chart.calculate_and_add_fractals()
 		)
+
+# [修复版] 动态构建回放进度条 UI (使用 CanvasLayer 确保可见性)
+func _setup_playback_controls():
+	# 1. 创建独立的 CanvasLayer
+	# 这能保证进度条始终悬浮在画面最上层，不会被图表或底板遮挡
+	var ui_layer = CanvasLayer.new()
+	ui_layer.layer = 5 # 层级设为 5，高于普通 UI，但低于弹窗(通常是100)
+	ui_layer.name = "PlaybackUILayer"
+	add_child(ui_layer)
+
+	# 2. 创建底部的 Panel 容器
+	var panel = PanelContainer.new()
+	# 设置锚点为底部全宽
+	panel.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	# 显式设置偏移量：距离底部 60px 的高度
+	panel.offset_top = -60 
+	panel.offset_bottom = 0
+	
+	# [关键] 添加背景样式，确保你能看清它，而不是透明的
+	var style = StyleBoxFlat.new()
+	style.bg_color = Color(0.08, 0.08, 0.08, 1.0) # 深灰色背景，完全不透明
+	style.border_width_top = 2
+	style.border_color = Color(0.3, 0.3, 0.3) # 顶部加一条亮边
+	panel.add_theme_stylebox_override("panel", style)
+	
+	ui_layer.add_child(panel)
+
+	# 3. 布局容器
+	var hbox = HBoxContainer.new()
+	# 增加一些内边距，不要贴边
+	var margin = MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 20)
+	margin.add_theme_constant_override("margin_right", 20)
+	margin.add_theme_constant_override("margin_top", 10)
+	margin.add_theme_constant_override("margin_bottom", 10)
+	
+	panel.add_child(margin)
+	margin.add_child(hbox)
+
+	# 4. 进度条 (Slider)
+	_playback_slider = HSlider.new()
+	_playback_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL # 撑满宽度
+	_playback_slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_playback_slider.min_value = 0
+	_playback_slider.scrollable = false # 禁止滚轮防止误触
+	
+	# 稍微美化一下 Slider (可选)
+	_playback_slider.modulate = Color(0.0, 0.8, 1.0) # 青蓝色高亮
+	hbox.add_child(_playback_slider)
+
+	# 5. 时间显示标签 (Label)
+	# 加一个分割占位
+	var spacer = Control.new()
+	spacer.custom_minimum_size.x = 20
+	hbox.add_child(spacer)
+
+	_playback_label = Label.new()
+	_playback_label.text = "Waiting for data..."
+	_playback_label.custom_minimum_size.x = 200
+	_playback_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_playback_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_playback_label.add_theme_font_size_override("font_size", 16)
+	hbox.add_child(_playback_label)
+
+	# --- 连接信号 (保持不变) ---
+
+	# 拖拽开始：暂停播放
+	_playback_slider.drag_started.connect(func():
+		_is_dragging_slider = true
+		if is_playing:
+			_toggle_play() # 暂停
+	)
+
+	# 拖拽过程：实时更新预览时间
+	_playback_slider.value_changed.connect(func(val):
+		_update_time_label(int(val))
+	)
+
+	# 拖拽结束：执行跳转
+	_playback_slider.drag_ended.connect(func(value_changed):
+		_is_dragging_slider = false
+		# 注意：drag_ended 的 value_changed 参数有时可能为 false，
+		# 但我们仍然希望在松手时跳转，所以直接取 value
+		jump_to_index(int(_playback_slider.value))
+	)
+	
+	print(">> 进度条 UI 已创建 (CanvasLayer)")
+
+
+# [新增] 辅助更新时间标签
+func _update_time_label(idx: int):
+	if full_history_data.is_empty(): return
+	var safe_idx = clamp(idx, 0, full_history_data.size() - 1)
+	var time_str = full_history_data[safe_idx].t
+	# 显示格式：Index / Total [Time]
+	_playback_label.text = "%s (%d/%d)" % [time_str, safe_idx + 1, full_history_data.size()]
+
+
+# [新增] 核心跳转逻辑
+func jump_to_index(target_index: int):
+	if full_history_data.is_empty(): return
+
+	print(">> 跳转至索引: ", target_index)
+
+	# 1. [关键] 安全检查与状态重置
+	target_index = clamp(target_index, 0, full_history_data.size() - 1)
+
+	# 2. [关键] 增加代数 ID，这将使得正在运行的 _simulate_candle_ticks 立即失效
+	_current_tick_generation += 1
+
+	# 3. 停止定时器
+	playback_timer.stop()
+	is_playing = false
+	if btn_play: btn_play.text = "Play"
+
+	# 4. 更新当前索引
+	current_playback_index = target_index
+
+	# 5. 重置账户数据 (因为时间变了，旧订单不再有效)
+	account.reset_data()
+
+	# 6. 重组图表数据
+	# 取出 0 到 target_index 的所有数据
+	var new_history = full_history_data.slice(0, current_playback_index + 1)
+
+	# 7. 刷新图表
+	chart.set_history_data(new_history)
+	chart.scroll_to_end() # 确保视图在最右边
+
+	# 8. 更新缓存 (非常重要，否则后续逻辑会崩溃)
+	_cached_last_candle = new_history.back().duplicate()
+
+	# 9. 强制刷新一次 UI 和 辅助线
+	# 因为 reset_data 清空了账户，我们需要通知图表清除画线
+	chart.update_visual_orders([], [])
+	# 更新现价线
+	chart.update_current_price(_cached_last_candle.c, 0)
+	# 更新 HUD
+	_analyze_market_structure()
+
+	print("<< 跳转完成. 当前时间: ", _cached_last_candle.t)
+
 
 # --- 交易执行包装器 ---
 func _execute_trade(type: OrderData.Type):
@@ -350,6 +499,11 @@ func _on_file_selected(path: String):
 		# 在初始化完历史数据后，手动更新一次现价线
 		chart.update_current_price(_cached_last_candle.c)
 
+	# [新增] 初始化进度条范围
+	if _playback_slider:
+		_playback_slider.max_value = full_history_data.size() - 1
+		_playback_slider.set_value_no_signal(current_playback_index)
+
 func _toggle_play():
 	if full_history_data.is_empty(): return
 	is_playing = !is_playing
@@ -367,11 +521,19 @@ func _on_timer_tick():
 		print("回放结束")
 		return
 	
+	# 如果用户正在拖拽，暂停自动逻辑，防止抢夺控制权
+	if _is_dragging_slider: return
+
 	# 1. 暂停定时器！！绝对不能让定时器打断我们的 await 表演
 	playback_timer.stop()
 	
 	var target_candle = full_history_data[current_playback_index]
-	
+
+	# [新增] 同步更新 Slider 的值 (但不触发信号)
+	if _playback_slider:
+		_playback_slider.set_value_no_signal(current_playback_index)
+		_update_time_label(current_playback_index)
+
 	# 2. 等待表演结束 (这会花好几秒)
 	await _simulate_candle_ticks(target_candle)
 	
@@ -410,9 +572,12 @@ func _play_trade_sound():
 
 #  带详细 Log 的慢速 K 线生成器
 func _simulate_candle_ticks(final_data: Dictionary):
+	# [新增] 记录当前的代数 ID
+	var my_generation = _current_tick_generation
+
 	var t_str = final_data.t
 	var o = final_data.o
-	
+
 	# 1. 胚胎状态：初始 K 线只是一条横线
 	var current_sim_candle = {
 		"t": t_str,
@@ -421,19 +586,19 @@ func _simulate_candle_ticks(final_data: Dictionary):
 		"l": o, # 刚开盘 Low = Open
 		"c": o  
 	}
-	
+
 	# 先画第一笔，确保屏幕上出现 Dash
 	_process_tick(current_sim_candle, o, 60)
-	
+
 	# 2. 生成剧本
 	var ticks = _generate_tick_path(o, final_data.h, final_data.l, final_data.c)
 	var total_steps = ticks.size()
-	
+
 	# 3. 开始表演 (Tick 循环)
 	for i in range(total_steps):
-		# 安全检查：用户点停止了吗？
-		if not is_playing:
-			print("[DEBUG] 用户中止播放")
+		# [修改] 关键检查点 1：如果用户停止播放，或者发生了跳转(代数变了)，立即终止
+		if not is_playing or my_generation != _current_tick_generation:
+			# print("协程中断: Generation mismatch or Stopped") 
 			return
 			
 		var price = ticks[i]
@@ -452,15 +617,14 @@ func _simulate_candle_ticks(final_data: Dictionary):
 		var secs_left = int(60 * (1.0 - progress))
 		
 		# --- 更新 UI ---
-		# 如果你想不想看海量日志，可以注释掉下面这一行
-		# print("Tick [%d/%d] Price: %.5f | H: %.5f | L: %.5f" % [i, total_steps, price, current_sim_candle.h, current_sim_candle.l])
-		
 		_process_tick(current_sim_candle, price, secs_left)
 		
 		# --- [关键] 强制等待 ---
-		# 这里我是故意写死 0.05 秒，也就是每秒 20 添加。
-		# 假设有 100 个 tick，这根线会画 5 秒钟！这绝对不可能是瞬间！
-		await get_tree().create_timer(0.05).timeout
+		await get_tree().create_timer(tick_delay).timeout
+		
+		# [修改] 关键检查点 2：等待回来后再次检查，防止等待期间发生了跳转
+		if my_generation != _current_tick_generation:
+			return
 
 	# 4. 完美收官
 	_process_tick(final_data, final_data.c, 0)

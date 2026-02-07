@@ -178,3 +178,23 @@ func _check_sl_tp(order: OrderData, current_price: float) -> bool:
 		return true
 		
 	return false
+
+
+# [新增] 重置账户状态 (用于时间跳转 / 回放重置)
+func reset_data():
+	# 1. 清空所有列表
+	_active_orders.clear()
+	_history_orders.clear()
+	# 2. 重置单号计数器
+	_ticket_counter = 1
+	# 3. 恢复初始余额 (或者你可以选择保留当前余额，视需求而定)
+	_balance = initial_balance
+
+	# 4. 通知外部 UI 清空
+	balance_updated.emit(_balance)
+	equity_updated.emit(_balance, 0.0)
+
+	# 发送空的列表以清空图表上的箭头和线
+	# 注意：这里我们需要发一个特殊的信号，或者复用 existing logic
+	# 下面通过发射空的 opened/closed 信号不一定合适，最好由 Controller 手动刷新 Chart
+	print(">> 账户状态已重置")
