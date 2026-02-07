@@ -5,6 +5,7 @@ extends PanelContainer
 var _lbl_trend: Label
 var _lbl_stat: Label
 var _lbl_atr: Label
+var _lbl_bb_info: Label
 
 func _init():
 	# 1. 样式设置 (左上角半透明悬浮窗)
@@ -44,6 +45,12 @@ func _init():
 	_lbl_atr = Label.new()
 	_lbl_atr.text = "ATR: -- (Risk: --)"
 	vbox.add_child(_lbl_atr)
+	
+	# [新增]
+	_lbl_bb_info = Label.new()
+	_lbl_bb_info.text = "BB: (20, 2.0)"
+	_lbl_bb_info.add_theme_color_override("font_color", Color.CYAN) #用青色呼应线
+	vbox.add_child(_lbl_bb_info)
 
 # --- 公开接口 ---
 func update_status(trend_str: String, rsi_val: float, atr_val: float, price: float):
@@ -75,3 +82,8 @@ func update_status(trend_str: String, rsi_val: float, atr_val: float, price: flo
 	# 假设 5 位小数报价，0.00020 就是 20 点
 	var pips = atr_val * 10000.0 # 粗略换算
 	_lbl_atr.text = "ATR(14): %.5f (~%d pips)" % [atr_val, pips]
+
+# --- BB 配置信息显示 ---
+func update_bb_info(period: int, k: float):
+	if _lbl_bb_info:
+		_lbl_bb_info.text = "BB Settings: (%d, %.1f)" % [period, k]

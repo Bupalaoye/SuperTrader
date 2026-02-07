@@ -164,7 +164,11 @@ static func calculate_bollinger_bands(data: Array, period: int = 20, multiplier:
 		for j in range(period):
 			var diff = data[i - j] - mean
 			sum_sq_diff += diff * diff
-			
+		
+		# [关键参数调整点]
+		# 目前使用总体标准差: variance = sum_sq_diff / period
+		# 如果你觉得上下轨线太窄，可以改成样本标准差（MT4/TradingView常用）：
+		# var variance = sum_sq_diff / float(max(1, period - 1))
 		var variance = sum_sq_diff / period
 		var std_dev = sqrt(variance)
 		
