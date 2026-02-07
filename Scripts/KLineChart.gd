@@ -25,7 +25,7 @@ var _order_layer: OrderOverlay
 var _drawing_layer: DrawingLayer
 var _indicator_layer: IndicatorLayer
 # 布林带配置状态 (是否启用、周期、倍数、颜色)
-var _bb_settings = { "active": false, "period": 21, "k": 0.5, "color": Color.TEAL }
+var _bb_settings = { "active": false, "period": 34, "color": Color.TEAL }
 # [核心修复] 单一真理源：屏幕最左边是哪根K线？
 var _calculated_start_index: int = 0
 # 持久化缓存，避免每帧创建大数组
@@ -614,11 +614,11 @@ func get_candle_width() -> float:
 # Bollinger Band Controls
 # -------------------------
 
-# 确保这里的默认颜色是 Color.CYAN，以防万一
-func set_bollinger_visible(active: bool, period: int = 20, k: float = 2.0, color: Color = Color.CYAN):
+# [\u91cd构] 接口签名修改：移除 k 参数
+func set_bollinger_visible(active: bool, period: int = 34, color: Color = Color.CYAN):
 	_bb_settings.active = active
 	_bb_settings.period = period
-	_bb_settings.k = k
+	# [清理] _bb_settings.k = k  <-- 删除这行
 	_bb_settings.color = color
 
 	if active:

@@ -44,11 +44,11 @@ var order_window_overlay: Control
 var hud_display: MarketHUD
 
 # --- 布林带配置参数 ---
-var _bb_period: int = 21     # 默认周期
-var _bb_k: float = 0       # 倍数不再使用 (Set to 0 or ignore)
+var _bb_period: int = 21     # 默认周期改为 21 (符合 EMA Channel 策略)
+# [清理] 已删除 var _bb_k
 var _bb_config_dialog: ConfirmationDialog
 var _spin_period: SpinBox
-var _spin_k: SpinBox
+# [清理] 已删除 var _spin_k
 
 # --- 噪声生成 (Perlin Noise) ---
 var _noise: FastNoiseLite
@@ -221,8 +221,8 @@ func _ready():
 
 	# [修改] 初始化图表上的线
 	if chart:
-		# 设置 period=34, k=0 (k 参数现在虽然传递但不起作用)
-		chart.set_bollinger_visible(true, _bb_period, 0, Color.CYAN)
+		# 修改后的接口只接收: (active, period, color)
+		chart.set_bollinger_visible(true, _bb_period, Color.CYAN)
 		print(">> 系统初始化: 34 EMA Channel 已激活")
 	else:
 		print(">> 错误: 未找到 KLineChart 节点 <<")
@@ -867,19 +867,17 @@ func _update_oscillators_for_hud(end_idx: int):
 # --- 布林带配置 UI 相关函数 ---
 
 func _setup_bb_config_ui():
-	# 1. 创建入口按钮 (放在屏幕右上角或者其他空闲位置)
+	# 1. 创建入口按钮
 	var btn_config = Button.new()
-	btn_config.text = "🔧 BB Config"
-	btn_config.position = Vector2(100, 60) # 你可以根据实际情况调整位置，比如放在 MA 按钮旁边
-	btn_config.size = Vector2(100, 30)
-	# 添加到 CanvasLayer 确保显示在最上层，或者直接加到 HUD 里
-	# 这里为了简单，直接加到当前节点，如果被遮挡，建议加到 HUD 的父节点下
+	btn_config.text = "🔧 Channel Config" # 改名，更准确
+	btn_config.position = Vector2(100, 60)
+	btn_config.size = Vector2(120, 30)
 	add_child(btn_config) 
 	
 	# 2. 创建配置弹窗
 	_bb_config_dialog = ConfirmationDialog.new()
-	_bb_config_dialog.title = "Bollinger Bands Settings"
-	_bb_config_dialog.min_size = Vector2(300, 150)
+	_bb_config_dialog.title = "EMA Channel Settings" # 改标题
+	_bb_config_dialog.min_size = Vector2(250, 100) # 缩小尺寸，因为少了一行
 	add_child(_bb_config_dialog)
 	
 	var vbox = VBoxContainer.new()
@@ -900,46 +898,28 @@ func _setup_bb_config_ui():
 	_spin_period.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hbox1.add_child(_spin_period)
 	
-	# --- 倍数设置 (关键参数) ---
-	var hbox2 = HBoxContainer.new()
-	vbox.add_child(hbox2)
-	var lbl2 = Label.new()
-	lbl2.text = "Deviation (K): " # 这就是控制上下轨宽度的参数
-	lbl2.custom_minimum_size.x = 100
-	hbox2.add_child(lbl2)
-	
-	_spin_k = SpinBox.new()
-	_spin_k.min_value = 0.1
-	_spin_k.max_value = 10.0
-	_spin_k.step = 0.1     # 允许 0.1 的微调，比如 2.1, 2.2
-	_spin_k.value = _bb_k
-	_spin_k.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	hbox2.add_child(_spin_k)
+	# [清理] 倍数设置 UI (HBox2) 已彻底移除
 	
 	# 3. 连接信号
-	# 点击按钮 -> 打开弹窗
 	btn_config.pressed.connect(func():
 		_spin_period.value = _bb_period
-		_spin_k.value = _bb_k
 		_bb_config_dialog.popup_centered()
 	)
 	
-	# 点击确定 -> 应用设置
 	_bb_config_dialog.confirmed.connect(func():
 		_bb_period = int(_spin_period.value)
-		_bb_k = _spin_k.value
+		# [清理] 不再读取 _spin_k
 		_apply_bb_settings()
 	)
 
 func _apply_bb_settings():
-	print(">> 应用布林带参数: Period=%d, K=%.2f" % [_bb_period, _bb_k])
+	print(">> 应用通道参数: Period=%d (34 EMA Channel)" % _bb_period)
 	
-	# 1. 调用 Chart 的接口重绘指标
+	# 1. 调用 Chart 的接口 (移除 k 参数)
 	if chart:
-		# 强制显式颜色 Cyan，确保三青线视觉一致
-		chart.set_bollinger_visible(true, _bb_period, _bb_k, Color.CYAN)
-		# 如果需要立即刷新，可以调用 chart.queue_redraw()，但 set_bollinger_visible 内部通常处理了
+		# 修改后的接口只接收: (active, period, color)
+		chart.set_bollinger_visible(true, _bb_period, Color.CYAN)
 
-	# 2. (可选) 更新 HUD 显示当前参数
-	if hud_display and hud_display.has_method("update_bb_info"):
-		hud_display.update_bb_info(_bb_period, _bb_k)
+	# 2. 更新 HUD 显示 (移除 k 参数)
+	if hud_display:
+		hud_display.update_bb_info(_bb_period)

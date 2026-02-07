@@ -49,8 +49,8 @@ func _init():
 	
 	# [新增]
 	_lbl_bb_info = Label.new()
-	_lbl_bb_info.text = "BB: (20, 2.0)"
-	_lbl_bb_info.add_theme_color_override("font_color", Color.CYAN) #用青色呼应线
+	_lbl_bb_info.text = "Channel: 34 EMA" # 默认文本更新
+	_lbl_bb_info.add_theme_color_override("font_color", Color.CYAN)
 	vbox.add_child(_lbl_bb_info)
 
 # --- 公开接口 ---
@@ -104,9 +104,12 @@ func update_status(trend_str: String, rsi_val: float, atr_val: float, price: flo
 	update_status_indicators(rsi_val, atr_val)
 
 # --- BB 配置信息显示 ---
-func update_bb_info(period: int, k: float):
+
+# [\u91cd构] 移除 k 参数，文案更新
+func update_bb_info(period: int):
 	if _lbl_bb_info:
-		_lbl_bb_info.text = "BB Settings: (%d, %.1f)" % [period, k]
+		# 显示更专业的术语
+		_lbl_bb_info.text = "%d EMA Channel (H/L/C)" % period
 
 
 # [NEW] 设置策略名称标签
