@@ -198,12 +198,13 @@ func _ready():
 	hud_display.position = Vector2(20, 20) # 留点边距
 
 	# --- 初始化 实时布林带 ---
-	# 参数：开启=True, 周期=20, 倍数=2.0, 颜色=青色
+	# 参数：开启=True, 周期=20, 倍数=2.0, 颜色=青色(CYAN)
 	if chart:
-		chart.set_bollinger_visible(true, 20, 2.0, Color.TEAL)
-		print("系统就绪! 布林带已挂载。")
+		# 强制参数: 开启, 周期20, 倍数2, 颜色青色(Cyan)
+		chart.set_bollinger_visible(true, 20, 2.0, Color.CYAN)
+		print(">> 系统强制指令: 三青线布林带已激活 (Color=CYAN) <<")
 	else:
-		print("系统就绪! 请加载 CSV 数据。")
+		print(">> 错误: 未找到 KLineChart 节点 <<")
 
 	
 

@@ -537,7 +537,9 @@ func start_drawing(tool_name: String):
 # -------------------------
 # Bollinger Band Controls
 # -------------------------
-func set_bollinger_visible(active: bool, period: int = 20, k: float = 2.0, color: Color = Color.TEAL):
+
+# 确保这里的默认颜色是 Color.CYAN，以防万一
+func set_bollinger_visible(active: bool, period: int = 20, k: float = 2.0, color: Color = Color.CYAN):
 	_bb_settings.active = active
 	_bb_settings.period = period
 	_bb_settings.k = k
@@ -546,12 +548,10 @@ func set_bollinger_visible(active: bool, period: int = 20, k: float = 2.0, color
 	if active:
 		_recalculate_indicators_full()
 	else:
-		# 关闭时清空缓存与图层
 		_bb_cache = { "ub": [], "mb": [], "lb": [] }
 		_bb_cache_linked = false
 		if _indicator_layer:
 			_indicator_layer.clear_indicators()
-
 
 func _recalculate_indicators():
 	# 兼容旧名字：保留但转发到全量函数
@@ -674,7 +674,7 @@ func scroll_to_end():
 
 
 # [新增] 计算并添加布林带
-func calculate_and_add_bollinger(period: int = 20, multiplier: float = 2.0, color: Color = Color.TEAL):
+func calculate_and_add_bollinger(period: int = 20, multiplier: float = 2.0, color: Color = Color.CYAN):
 	# 1. 准备数据
 	# 为了提高效率，这里最好只提取 Close 数组
 	var closes = []
