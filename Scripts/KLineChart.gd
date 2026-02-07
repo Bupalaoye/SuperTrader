@@ -640,18 +640,19 @@ func _recalculate_indicators_full():
 	if _all_candles.is_empty():
 		return
 
-	# A. 提取 Close 价格并全量计算
-	_closes_cache.clear()
-	for c in _all_candles:
-		_closes_cache.append(c.c)
+	# [CHANGED] 不再只提取 Closes，而是直接把整个 candles 数组传给新算法
+	# 算法内部会提取 High/Low/Close
+	var period = _bb_settings.period # 34
 
-	var result = IndicatorCalculator.calculate_bollinger_bands(_closes_cache, _bb_settings.period, _bb_settings.k)
+	# 调用新的 EMA Channel 算法
+	var result = IndicatorCalculator.calculate_ema_channel(_all_candles, period)
 
-	# 更新缓存引用（零拷贝）
+	# 更新缓存 (保持结构 ub/mb/lb 不变，IndicatorLayer 依然能画出三青线)
 	_bb_cache = result
 
-	# 将引用传给图层（只需做一次）
+	# 链接图层
 	if _indicator_layer:
+		# 这里的 "MAIN_BB" 可以改个名，但为了不破坏 IndicatorLayer 的逻辑，保持 key 不变没问题
 		_indicator_layer.update_band_indicator("MAIN_BB", _bb_cache, _bb_settings.color, 1.0)
 		_bb_cache_linked = true
 
@@ -662,26 +663,40 @@ func _update_indicators_incremental():
 	var last_idx = _all_candles.size() - 1
 	var period = _bb_settings.period
 
-	if last_idx < period - 1: return
+	# 如果历史数据不足以形成 EMA，跳过
+	if last_idx < period: return
 
-	# 使用持久化的 closes 缓存进行单点计算
-	var val = IndicatorCalculator.calculate_bollinger_at_index(_closes_cache, last_idx, period, _bb_settings.k)
+	# 1. 获取上一根 (Index - 1) 的 EMA 值
+	# 注意：_bb_cache["ub"] 长度通常等于 _all_candles 长度
+	var prev_idx = last_idx - 1
+	if prev_idx < 0: return
 
-	# 确保 _bb_cache 的结构已初始化
+	# 安全检查：确保缓存数组够长
+	if _bb_cache["ub"].size() <= prev_idx: return
+
+	var prev_ub = _bb_cache["ub"][prev_idx]
+	var prev_lb = _bb_cache["lb"][prev_idx]
+	var prev_mb = _bb_cache["mb"][prev_idx]
+
+	# 2. 获取当前 K 线数据
+	var curr_candle = _all_candles[last_idx]
+
+	# 3. [CHANGED] 调用新的增量算法
+	var val = IndicatorCalculator.calculate_ema_channel_at_index(curr_candle, prev_ub, prev_lb, prev_mb, period)
+
+	# 4. 填充或更新缓存
+	# 确保数组长度足以容纳 new_idx
 	if _bb_cache["ub"].size() <= last_idx:
-		# 长度不足时，补齐 NAN 直到 last_idx
-		var need = last_idx - _bb_cache["ub"].size() + 1
-		for i in range(need):
-			_bb_cache["ub"].append(NAN)
-			_bb_cache["mb"].append(NAN)
-			_bb_cache["lb"].append(NAN)
+		_bb_cache["ub"].append(NAN)
+		_bb_cache["mb"].append(NAN)
+		_bb_cache["lb"].append(NAN)
 
-	# 原地修改最后一个值（零拷贝）
+	# 原地修改
 	_bb_cache["ub"][last_idx] = val.ub
 	_bb_cache["mb"][last_idx] = val.mb
 	_bb_cache["lb"][last_idx] = val.lb
 
-	# 通知图层重绘（图层持有同一引用）
+	# 通知重绘
 	if _indicator_layer: _indicator_layer.queue_redraw()
 
 

@@ -45,7 +45,7 @@ var hud_display: MarketHUD
 
 # --- 布林带配置参数 ---
 var _bb_period: int = 21     # 默认周期
-var _bb_k: float = 0.5       # 默认倍数 (标准差)
+var _bb_k: float = 0       # 倍数不再使用 (Set to 0 or ignore)
 var _bb_config_dialog: ConfirmationDialog
 var _spin_period: SpinBox
 var _spin_k: SpinBox
@@ -214,12 +214,16 @@ func _ready():
 	hud_display.set_anchors_preset(Control.PRESET_TOP_LEFT)
 	hud_display.position = Vector2(20, 20) # 留点边距
 
-	# --- 初始化 实时布林带 ---
-	# 参数：开启=True, 周期=变量, 倍数=变量, 颜色=青色(CYAN)
+	# --- 初始化 实时指标 (使用 34 EMA Channel 代替原布林带) ---
+	if hud_display:
+		# 强制更新一次标签，表明我们用的是 EMA Channel
+		hud_display.set_strategy_label("34 EMA Channel (H/L/C)")
+
+	# [修改] 初始化图表上的线
 	if chart:
-		# 使用变量 _bb_period 和 _bb_k，而不是写死 20 和 2.0
-		chart.set_bollinger_visible(true, _bb_period, _bb_k, Color.CYAN)
-		print(">> 系统初始化: 布林带已激活 (Period=%d, K=%.2f)" % [_bb_period, _bb_k])
+		# 设置 period=34, k=0 (k 参数现在虽然传递但不起作用)
+		chart.set_bollinger_visible(true, _bb_period, 0, Color.CYAN)
+		print(">> 系统初始化: 34 EMA Channel 已激活")
 	else:
 		print(">> 错误: 未找到 KLineChart 节点 <<")
 	
@@ -783,31 +787,51 @@ func _process_tick(candle_state: Dictionary, current_price: float, seconds_left:
 # [新增] 核心策略分析器 (修改版：使用预计算的 EMA)
 func _analyze_market_structure():
 	if full_history_data.is_empty(): return
-	
-	# 获取当前 K 线索引
-	# 注意：current_playback_index 指向的是"即将"发生的 K 线
-	# 在播放中，我们实际上是在模拟 current_playback_index 这一根的生成
-	# 所以要获取当前的 EMA 值，就用这个索引
+
+	# 获取当前播放索引
 	var idx = current_playback_index
-	
-	# 边界检查
-	var current_ema = NAN
-	if idx >= 0 and idx < _history_ema200.size():
-		current_ema = _history_ema200[idx]
-	
-	# 获取当前实时价格 (来自缓存的最新一跳价格)
+
+	# 1. 获取当前实时价格
 	var current_price = 0.0
 	if not _cached_last_candle.is_empty():
 		current_price = _cached_last_candle.c
+
+	# 2. 获取当前的 34 EMA Channel 数据
+	# 必须通过 chart 的公共接口或者缓存获取。
+	# 由于 Controller 不直接持有 _bb_cache，我们需要一个获取方法。
+	# 或者这里简单一点，直接去 chart 的 cache 拿 (如果 _bb_cache 是 public 的，或者加 getter)
+	# 建议在 KLineChart 加一个 helper: get_indicator_value_at(index)
+	# --- 临时方案：直接读取 chart 内部变量 (GDScript 允许这样做，虽然不优雅) ---
 	
-	# === 更新 HUD (趋势过滤器) ===
+	var channel_data = chart._bb_cache # 访问 Chart 内部的缓存
+	
+	var ema_high = NAN
+	var ema_low = NAN
+	var ema_close = NAN # 中线
+	
+	if channel_data.has("ub") and idx < channel_data["ub"].size():
+		ema_high = channel_data["ub"][idx]
+		ema_low = channel_data["lb"][idx]
+		ema_close = channel_data["mb"][idx]
+
+	# 3. 更新 HUD 趋势判断
 	if hud_display:
-		hud_display.update_trend_filter(current_price, current_ema)
-		
-		# 同时更新 RSI 和 ATR (保留原来的部分逻辑)
-		# 为了性能，这里可以简化，不再重复切片计算 EMA
-		# 只需要计算 RSI/ATR
-		_update_oscillators_for_hud(idx)
+		if is_nan(ema_high) or is_nan(ema_low):
+			hud_display.update_trend_text("WAITING...", Color.GRAY)
+		else:
+			# 策略逻辑:
+			# Close > EMA High -> UPTREND
+			# Close < EMA Low  -> DOWNTREND
+			# Inside Channel   -> RANGING / CALLBACK
+			
+			if current_price > ema_high:
+				hud_display.update_trend_text("🟢 BUY ZONE (Above High)", Color.GREEN)
+			elif current_price < ema_low:
+				hud_display.update_trend_text("🔴 SELL ZONE (Below Low)", Color.RED)
+			else:
+				hud_display.update_trend_text("⚪ RANGING (Inside Channel)", Color.GRAY)
+
+	# 4. 保留原有的 EMA 200 过滤器逻辑 (可选)
 
 # [新增辅助] 提取原本的震荡指标计算逻辑，保持代码整洁
 func _update_oscillators_for_hud(end_idx: int):

@@ -107,3 +107,16 @@ func update_status(trend_str: String, rsi_val: float, atr_val: float, price: flo
 func update_bb_info(period: int, k: float):
 	if _lbl_bb_info:
 		_lbl_bb_info.text = "BB Settings: (%d, %.1f)" % [period, k]
+
+
+# [NEW] 设置策略名称标签
+func set_strategy_label(text: String):
+	if _lbl_bb_info:
+		_lbl_bb_info.text = text
+		_lbl_bb_info.modulate = Color.CYAN
+
+
+# [NEW] 通用趋势更新接口
+func update_trend_text(text: String, color: Color):
+	_lbl_trend.text = text
+	_lbl_trend.modulate = color

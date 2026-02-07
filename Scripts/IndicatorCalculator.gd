@@ -272,3 +272,63 @@ static func calculate_bollinger_at_index(closes: Array, index: int, period: int,
 		"ub": mb + (k * std_dev),
 		"lb": mb - (k * std_dev)
 	}
+
+
+# ==========================================
+# 8. [NEW] 34 EMA Channel (High/Low/Close) - 全量计算
+# ==========================================
+static func calculate_ema_channel(candles: Array, period: int) -> Dictionary:
+	var size = candles.size()
+	var ub_list = []
+	ub_list.resize(size)
+	ub_list.fill(NAN) # High EMA
+	var lb_list = []
+	lb_list.resize(size)
+	lb_list.fill(NAN) # Low EMA
+	var mb_list = []
+	mb_list.resize(size)
+	mb_list.fill(NAN) # Close EMA (Trend)
+
+	if size < period:
+		return {"ub": ub_list, "mb": mb_list, "lb": lb_list}
+
+	# 1. 提取基础数据数组
+	var highs = []
+	var lows = []
+	var closes = []
+	highs.resize(size)
+	lows.resize(size)
+	closes.resize(size)
+
+	for i in range(size):
+		highs[i] = candles[i].h
+		lows[i] = candles[i].l
+		closes[i] = candles[i].c
+
+	# 2. 复用已有的 EMA 算法分别计算
+	ub_list = calculate_ema(highs, period)
+	lb_list = calculate_ema(lows, period)
+	mb_list = calculate_ema(closes, period)
+
+	return {"ub": ub_list, "mb": mb_list, "lb": lb_list}
+
+
+# ==========================================
+# 9. [NEW] 34 EMA Channel - 单点增量计算 (实时性能优化)
+# ==========================================
+# ub_prev, lb_prev, mb_prev: 上一根K线的指标值
+static func calculate_ema_channel_at_index(candle: Dictionary, ub_prev: float, lb_prev: float, mb_prev: float, period: int) -> Dictionary:
+	# 如果前值为 NAN，无法进行递归计算，返回 NAN
+	if is_nan(ub_prev) or is_nan(lb_prev) or is_nan(mb_prev):
+		return { "ub": NAN, "mb": NAN, "lb": NAN }
+
+	# EMA 乘数公式: 2 / (N + 1)
+	var k = 2.0 / (float(period) + 1.0)
+
+	# EMA = (Price - Prev) * k + Prev
+	# 分别对应 High, Low, Close
+	var new_ub = (candle.h - ub_prev) * k + ub_prev
+	var new_lb = (candle.l - lb_prev) * k + lb_prev
+	var new_mb = (candle.c - mb_prev) * k + mb_prev
+
+	return { "ub": new_ub, "mb": new_mb, "lb": new_lb }
