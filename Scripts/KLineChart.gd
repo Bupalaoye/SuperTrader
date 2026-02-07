@@ -24,6 +24,14 @@ var _overlay: CrosshairOverlay
 var _order_layer: OrderOverlay
 var _drawing_layer: DrawingLayer
 var _indicator_layer: IndicatorLayer
+# 布林带配置状态 (是否启用、周期、倍数、颜色)
+var _bb_settings = { "active": false, "period": 20, "k": 2.0, "color": Color.TEAL }
+# 持久化缓存，避免每帧创建大数组
+var _bb_cache: Dictionary = { "ub": [], "mb": [], "lb": [] }
+# 标记是否已经把引用传给了 IndicatorLayer
+var _bb_cache_linked: bool = false
+# 持久化 Close 值缓存（与 _all_candles 索引对应），用于零拷贝增量计算
+var _closes_cache: Array = []
 # [新增] 现价线层
 var _current_price_layer: CurrentPriceLayer
 # [新增] 网格层
@@ -368,7 +376,15 @@ func set_history_data(data: Array):
 	for i in range(data.size()):
 		var t_str = data[i].t
 		_time_to_index_cache[t_str] = i
-	
+
+	# 同步 closes 缓存
+	_closes_cache.clear()
+	for c in _all_candles:
+		_closes_cache.append(c.c)
+
+	# 全量计算布林带（仅在加载历史时执行一次）
+	_recalculate_indicators_full()
+
 	queue_redraw()
 
 func append_candle(data: Dictionary):
@@ -379,6 +395,13 @@ func append_candle(data: Dictionary):
 	
 	if _end_index == _all_candles.size() - 2:
 		_end_index += 1
+
+	# 同步 closes 缓存（零拷贝追加）
+	_closes_cache.append(data.c)
+
+	# 新增：新 K 线生成后进行增量追加计算
+	_append_indicators_incremental()
+
 	queue_redraw()
 
 # [新增] 更新现价线 (支持倒计时)
@@ -395,6 +418,15 @@ func update_last_candle(data: Dictionary):
 	var last_idx = _all_candles.size() - 1
 	_all_candles[last_idx] = data
 
+	# 同步 closes 缓存（原地修改，零分配）
+	if _closes_cache.size() == _all_candles.size():
+		_closes_cache[last_idx] = data.c
+	else:
+		# 防御性处理：保持一致
+		_closes_cache.clear()
+		for c in _all_candles:
+			_closes_cache.append(c.c)
+
 	# 2. [关键] 强制重新计算视野
 	# 必须重新扫描当前屏幕，因为这根 K 线可能刚刚创了新高，撑大了 Y 轴
 	var chart_width = size.x
@@ -405,7 +437,10 @@ func update_last_candle(data: Dictionary):
 	# 重算边界 (这将触发 Y 轴缩放)
 	_calculate_price_bounds(start_idx, _end_index)
 
-	# 3. 绘制
+	# 3. 在重绘前，进行增量更新（只计算最后一个点）
+	_update_indicators_incremental()
+
+	# 4. 绘制
 	queue_redraw()
 
 	# 4. 联动更新其他层
@@ -497,6 +532,87 @@ func get_candle_width() -> float:
 func start_drawing(tool_name: String):
 	if _drawing_layer:
 		_drawing_layer.start_tool(tool_name)
+
+
+# -------------------------
+# Bollinger Band Controls
+# -------------------------
+func set_bollinger_visible(active: bool, period: int = 20, k: float = 2.0, color: Color = Color.TEAL):
+	_bb_settings.active = active
+	_bb_settings.period = period
+	_bb_settings.k = k
+	_bb_settings.color = color
+
+	if active:
+		_recalculate_indicators_full()
+	else:
+		# 关闭时清空缓存与图层
+		_bb_cache = { "ub": [], "mb": [], "lb": [] }
+		_bb_cache_linked = false
+		if _indicator_layer:
+			_indicator_layer.clear_indicators()
+
+
+func _recalculate_indicators():
+	# 兼容旧名字：保留但转发到全量函数
+	_recalculate_indicators_full()
+
+
+func _recalculate_indicators_full():
+	if not _bb_settings.active or not _indicator_layer:
+		return
+	if _all_candles.is_empty():
+		return
+
+	# A. 提取 Close 价格并全量计算
+	_closes_cache.clear()
+	for c in _all_candles:
+		_closes_cache.append(c.c)
+
+	var result = IndicatorCalculator.calculate_bollinger_bands(_closes_cache, _bb_settings.period, _bb_settings.k)
+
+	# 更新缓存引用（零拷贝）
+	_bb_cache = result
+
+	# 将引用传给图层（只需做一次）
+	if _indicator_layer:
+		_indicator_layer.update_band_indicator("MAIN_BB", _bb_cache, _bb_settings.color, 1.0)
+		_bb_cache_linked = true
+
+
+func _update_indicators_incremental():
+	if not _bb_settings.active or _all_candles.is_empty(): return
+
+	var last_idx = _all_candles.size() - 1
+	var period = _bb_settings.period
+
+	if last_idx < period - 1: return
+
+	# 使用持久化的 closes 缓存进行单点计算
+	var val = IndicatorCalculator.calculate_bollinger_at_index(_closes_cache, last_idx, period, _bb_settings.k)
+
+	# 确保 _bb_cache 的结构已初始化
+	if _bb_cache["ub"].size() <= last_idx:
+		# 长度不足时，补齐 NAN 直到 last_idx
+		var need = last_idx - _bb_cache["ub"].size() + 1
+		for i in range(need):
+			_bb_cache["ub"].append(NAN)
+			_bb_cache["mb"].append(NAN)
+			_bb_cache["lb"].append(NAN)
+
+	# 原地修改最后一个值（零拷贝）
+	_bb_cache["ub"][last_idx] = val.ub
+	_bb_cache["mb"][last_idx] = val.mb
+	_bb_cache["lb"][last_idx] = val.lb
+
+	# 通知图层重绘（图层持有同一引用）
+	if _indicator_layer: _indicator_layer.queue_redraw()
+
+
+func _append_indicators_incremental():
+	# 在追加新 K 线后，调用增量更新（会执行 append 或修改最后一位）
+	if not _bb_settings.active: return
+	_update_indicators_incremental()
 
 # [新增] 计算指标
 func calculate_and_add_ma(period: int, color: Color):

@@ -25,6 +25,32 @@ func add_band_indicator(data_dict: Dictionary, color: Color, width: float = 1.0)
 	_indicators.append({ "type": "Band", "data": data_dict, "color": color, "width": width })
 	queue_redraw()
 
+# [兼容] 新增：通过 key 更新或新增 Band 指标，避免重复堆叠
+func update_band_indicator(key: String, data_dict: Dictionary, color: Color, width: float = 1.0):
+	# 1. 如果存在相同 key，则更新数据
+	for i in range(_indicators.size()):
+		if _indicators[i].has("key") and _indicators[i]["key"] == key:
+			_indicators[i]["data"] = data_dict
+			_indicators[i]["color"] = color
+			_indicators[i]["width"] = width
+			queue_redraw()
+			return
+
+	# 2. 否则新增一条带 key 的 Band 指标
+	_indicators.append({
+		"key": key,
+		"type": "Band",
+		"data": data_dict,
+		"color": color,
+		"width": width
+	})
+	queue_redraw()
+
+# [兼容旧接口] 保留 add_band_indicator，但内部生成随机 key
+func add_band_indicator_compat(data_dict: Dictionary, color: Color, width: float = 1.0):
+	var random_key = "Band_" + str(randi())
+	update_band_indicator(random_key, data_dict, color, width)
+
 # [新增] 添加图标标记 (用于分型 Fractals)
 # data_map: 字典 { index(int): price(float), ... }
 # is_up_arrow: true=向上箭头(标记底), false=向下箭头(标记顶)

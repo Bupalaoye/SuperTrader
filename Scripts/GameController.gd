@@ -197,7 +197,13 @@ func _ready():
 	hud_display.set_anchors_preset(Control.PRESET_TOP_LEFT)
 	hud_display.position = Vector2(20, 20) # 留点边距
 
-	print("系统就绪! 请加载 CSV 数据。")
+	# --- 初始化 实时布林带 ---
+	# 参数：开启=True, 周期=20, 倍数=2.0, 颜色=青色
+	if chart:
+		chart.set_bollinger_visible(true, 20, 2.0, Color.TEAL)
+		print("系统就绪! 布林带已挂载。")
+	else:
+		print("系统就绪! 请加载 CSV 数据。")
 
 	
 
